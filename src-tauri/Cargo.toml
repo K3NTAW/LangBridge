@@ -1,0 +1,50 @@
+[package]
+name = "cut-app"
+version = "0.1.0"
+description = "CUT Tauri shell — host process for the React UI."
+edition = "2024"
+rust-version = "1.85"
+publish = false
+
+[lib]
+name = "cut_app_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = [] }
+tauri-plugin-dialog = "2"
+tauri-plugin-fs = "2"
+tauri-plugin-os = "2"
+
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+thiserror = "2.0"
+anyhow = "1.0"
+log = "0.4"
+tokio = { version = "1.40", features = ["rt-multi-thread", "macros", "io-util", "sync", "fs", "net", "time", "process"] }
+
+# Engine crate (sibling workspace member). Used for SPEC_VERSION /
+# ENGINE_VERSION constants; the actual engine state lives in the
+# spawned `cut-engine-host` subprocess that this crate talks to over
+# a UDS, see docs/architecture.md §2.1.
+cut-engine = { path = "../../cut-engine" }
+
+# Native preview (milestone D): same FFmpeg stack as `engine-spike`.
+ffmpeg-next = { version = "8.0", default-features = false, features = ["codec", "format", "software-scaling"] }
+image = { version = "0.25", default-features = false, features = ["png"] }
+base64 = "0.22"
+
+[features]
+default = ["custom-protocol"]
+custom-protocol = ["tauri/custom-protocol"]
+
+[profile.release]
+panic = "abort"
+codegen-units = 1
+lto = true
+incremental = false
+opt-level = 3
+strip = "symbols"

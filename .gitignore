@@ -1,0 +1,16 @@
+node_modules/
+dist/
+dist-ssr/
+*.local
+.vite/
+
+# Tauri
+src-tauri/target/
+src-tauri/Cargo.lock
+src-tauri/gen/
+# Copied by build.rs from engine-spike (bundled into the app)
+src-tauri/resources/engine-spike
+src-tauri/resources/engine-spike.exe
+
+# Editor
+*.log
