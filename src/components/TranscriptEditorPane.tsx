@@ -34,9 +34,11 @@ import { useCallback, useEffect, useMemo, useRef, useState, type ChangeEvent } f
 import { open as openDialog, save as saveDialog } from "@tauri-apps/plugin-dialog";
 import {
   AlertCircle,
+  Captions,
   Download,
   Eraser,
   FileVideo,
+  GitCompare,
   Loader2,
   Mic,
   MousePointerClick,
@@ -45,14 +47,31 @@ import {
   ScrollText,
   Sparkles,
   Undo2,
+  VolumeX,
 } from "lucide-react";
 
 import {
   AIServiceError,
   getAIClient,
+  type DiarizationRequestMode,
   type RecutRange,
   type Transcript,
 } from "../lib/aiClient";
+import {
+  CAPTION_STYLE_PRESETS,
+  EXPORT_VIDEO_PRESET_LABELS,
+  type CaptionSidecarFormat,
+  type CaptionStylePresetId,
+  type ExportVideoPresetId,
+  scaleMaxHeightForPreset,
+} from "../lib/captionPresets";
+import {
+  buildCaptionsSrtFromWords,
+  buildCaptionsVttFromWords,
+  suggestCaptionsPath,
+  suggestCaptionsVttPath,
+} from "../lib/captionsSrt";
+import { renderRangesToRecutRanges } from "../lib/exportRecut";
 import type { UseEngineProject } from "../lib/useEngineProject";
 import type { ClipId, Op, SourceId, TrackId } from "../lib/ops";
 import { asId } from "../lib/ops";
@@ -68,6 +87,7 @@ import { WHISPER_MODEL_OPTIONS } from "../lib/whisperModels";
 import { cn } from "../lib/cn";
 import { modKeySymbol } from "../lib/modKey";
 import { Kbd } from "./ui/Kbd";
+import { TranscriptRemovalDiff } from "./TranscriptRemovalDiff";
 
 interface Props {
   project: UseEngineProject;
@@ -149,6 +169,29 @@ function buildFillerDeleteOps(
   return { ops, wordIndices };
 }
 
+/** Batch-delete clips for explicit word indices (silence strip). */
+function buildWordIndexDeleteOps(
+  transcript: Transcript,
+  ingest: IngestResult,
+  indices: readonly number[],
+): { ops: Op[]; wordIndices: number[] } {
+  const ops: Op[] = [];
+  const wordIndices: number[] = [];
+  const sorted = [...new Set(indices)].sort((a, b) => a - b);
+  for (const idx of sorted) {
+    if (idx < 0 || idx >= transcript.words.length) continue;
+    const clipId = ingest.wordToClipId.get(idx);
+    if (clipId === undefined) continue;
+    wordIndices.push(idx);
+    ops.push({
+      kind: "clip_delete",
+      clip_id: asId<"ClipId">(clipId) as ClipId,
+      ripple: false,
+    });
+  }
+  return { ops, wordIndices };
+}
+
 function suggestOutputPath(input: string): string {
   const dot = input.lastIndexOf(".");
   if (dot === -1) return `${input}.cut.mp4`;
@@ -167,6 +210,22 @@ export function TranscriptEditorPane({
   const [deleted, setDeleted] = useState<ReadonlySet<number>>(new Set());
   const [exportSummary, setExportSummary] = useState<ExportSummary | null>(null);
   const [autoClean, setAutoClean] = useState<AutoCleanState | null>(null);
+  const [captionNotice, setCaptionNotice] = useState<{ kind: "ok" | "err"; text: string } | null>(null);
+  const [removalDiffOpen, setRemovalDiffOpen] = useState(false);
+  const [exportVideoPreset, setExportVideoPreset] = useState<ExportVideoPresetId>("height_1080");
+  const [captionStylePreset, setCaptionStylePreset] = useState<CaptionStylePresetId>("clean");
+  const [captionSidecarFormat, setCaptionSidecarFormat] = useState<CaptionSidecarFormat>("srt");
+  const [burnInCaptions, setBurnInCaptions] = useState(false);
+  const [enrichBusy, setEnrichBusy] = useState(false);
+  const [enrichNotice, setEnrichNotice] = useState<string | null>(null);
+  const [silenceStrip, setSilenceStrip] = useState<AutoCleanState | null>(null);
+  const [silenceStripBusy, setSilenceStripBusy] = useState(false);
+  const [sceneThreshold, setSceneThreshold] = useState(0.34);
+  const [speakerGapSeconds, setSpeakerGapSeconds] = useState(1.25);
+  const [diarizationMode, setDiarizationMode] = useState<DiarizationRequestMode>("auto");
+  const [silenceNoiseDb, setSilenceNoiseDb] = useState(-40);
+  const [silenceMinDuration, setSilenceMinDuration] = useState(0.45);
+  const [silenceOverlap, setSilenceOverlap] = useState(0.55);
 
   const transcript = (
     status.kind === "ready"
@@ -188,6 +247,50 @@ export function TranscriptEditorPane({
     if (transcript === null) return 0;
     return transcript.words.length - deleted.size;
   }, [transcript, deleted]);
+
+  const autoCleanRemovedWordsTitle = useMemo(() => {
+    if (autoClean === null || transcript === null) return "";
+    return autoClean.wordIndices
+      .map((i) => transcript.words[i]?.word?.trim() ?? "")
+      .filter(Boolean)
+      .join(", ");
+  }, [autoClean, transcript]);
+
+  const autoCleanRemovedWordsPreview = useMemo(() => {
+    if (autoClean === null || transcript === null || autoClean.wordIndices.length === 0) {
+      return null;
+    }
+    const maxWords = 10;
+    const slice = autoClean.wordIndices.slice(0, maxWords);
+    const parts = slice.map((i) => transcript.words[i]?.word?.trim() ?? "").filter(Boolean);
+    if (parts.length === 0) return null;
+    const more = autoClean.wordIndices.length - maxWords;
+    let line = parts.join(", ");
+    if (more > 0) line += ` (+${more} more)`;
+    return line;
+  }, [autoClean, transcript]);
+
+  const silenceStripRemovedWordsTitle = useMemo(() => {
+    if (silenceStrip === null || transcript === null) return "";
+    return silenceStrip.wordIndices
+      .map((i) => transcript.words[i]?.word?.trim() ?? "")
+      .filter(Boolean)
+      .join(", ");
+  }, [silenceStrip, transcript]);
+
+  const silenceStripRemovedWordsPreview = useMemo(() => {
+    if (silenceStrip === null || transcript === null || silenceStrip.wordIndices.length === 0) {
+      return null;
+    }
+    const maxWords = 10;
+    const slice = silenceStrip.wordIndices.slice(0, maxWords);
+    const parts = slice.map((i) => transcript.words[i]?.word?.trim() ?? "").filter(Boolean);
+    if (parts.length === 0) return null;
+    const more = silenceStrip.wordIndices.length - maxWords;
+    let line = parts.join(", ");
+    if (more > 0) line += ` (+${more} more)`;
+    return line;
+  }, [silenceStrip, transcript]);
 
   const lastReconciledHead = useRef<string | null | undefined>(undefined);
   const transcribeLockRef = useRef(false);
@@ -222,6 +325,14 @@ export function TranscriptEditorPane({
     }
   }, [project.head, autoClean]);
 
+  useEffect(() => {
+    if (silenceStrip === null) return;
+    const headValue = project.head?.head ?? null;
+    if (headValue !== silenceStrip.afterHead) {
+      setSilenceStrip(null);
+    }
+  }, [project.head, silenceStrip]);
+
   const onWhisperModelSelect = useCallback(
     (e: ChangeEvent<HTMLSelectElement>) => {
       onWhisperModelChange(e.target.value);
@@ -245,6 +356,7 @@ export function TranscriptEditorPane({
         setDeleted(new Set());
         setIngest(null);
         setAutoClean(null);
+        setSilenceStrip(null);
         setStatus({ kind: "transcribing", mediaPath: picked });
 
         let transcriptResult: Transcript;
@@ -299,6 +411,7 @@ export function TranscriptEditorPane({
           });
         } else {
           setAutoClean(null);
+          setSilenceStrip(null);
         }
 
         setStatus({ kind: "ready", mediaPath: picked, transcript: transcriptResult });
@@ -408,19 +521,61 @@ export function TranscriptEditorPane({
       filters: [{ name: "MP4", extensions: ["mp4"] }],
     });
     if (typeof out !== "string") return;
+
+    const captionOpts = CAPTION_STYLE_PRESETS[captionStylePreset].options;
+    const burnStyle = CAPTION_STYLE_PRESETS[captionStylePreset].burnInForceStyle;
+    const scaleMax = scaleMaxHeightForPreset(exportVideoPreset);
+
+    let burnPath: string | null = null;
+    if (burnInCaptions) {
+      const sidecar = buildCaptionsSrtFromWords(
+        transcript.words,
+        deleted,
+        captionOpts,
+        ranges.ranges,
+      );
+      if (!sidecar.trim()) {
+        setCaptionNotice({
+          kind: "err",
+          text: "Burn-in needs at least one kept timed word — adjust the cut.",
+        });
+        return;
+      }
+      burnPath = `${out}.cut-burn-in.srt`;
+      try {
+        const { writeTextFile } = await import("@tauri-apps/plugin-fs");
+        await writeTextFile(burnPath, sidecar);
+      } catch (e) {
+        const msg = e instanceof Error ? e.message : String(e);
+        setCaptionNotice({ kind: "err", text: `Could not write burn-in subtitle file: ${msg}` });
+        return;
+      }
+    }
+
     setStatus({ kind: "exporting", mediaPath, transcript });
     try {
-      const recutRanges: RecutRange[] = ranges.ranges.map((r) => ({
-        start_ticks: r.start_ticks,
-        end_ticks: r.end_ticks,
-      }));
-      const result = await getAIClient().recut(mediaPath, out, recutRanges);
+      const recutRanges: RecutRange[] = renderRangesToRecutRanges(ranges.ranges);
+      const result = await getAIClient().recut(mediaPath, out, recutRanges, {
+        preset: "medium",
+        crf: 20,
+        scale_max_height: scaleMax,
+        subtitle_path: burnPath,
+        subtitle_force_style: burnInCaptions ? burnStyle : null,
+      });
       setExportSummary({
         outputPath: result.output_path,
         sizeBytes: result.size_bytes,
         nRanges: result.n_ranges,
       });
       setStatus({ kind: "ready", mediaPath, transcript });
+      if (burnPath !== null) {
+        try {
+          const { remove } = await import("@tauri-apps/plugin-fs");
+          await remove(burnPath);
+        } catch {
+          /* temp sidecar may remain; harmless */
+        }
+      }
     } catch (e) {
       const msg = e instanceof AIServiceError
         ? e.detail
@@ -432,8 +587,107 @@ export function TranscriptEditorPane({
         message: `Export failed: ${msg}`,
         previous: { kind: "ready", mediaPath, transcript },
       });
+      if (burnPath !== null) {
+        try {
+          const { remove } = await import("@tauri-apps/plugin-fs");
+          await remove(burnPath);
+        } catch {
+          /* ignore */
+        }
+      }
     }
-  }, [project, transcript, mediaPath]);
+  }, [
+    project,
+    transcript,
+    mediaPath,
+    deleted,
+    burnInCaptions,
+    captionStylePreset,
+    exportVideoPreset,
+  ]);
+
+  useEffect(() => {
+    if (captionNotice === null) return;
+    const ms = captionNotice.kind === "ok" ? 4500 : 8000;
+    const t = window.setTimeout(() => setCaptionNotice(null), ms);
+    return () => window.clearTimeout(t);
+  }, [captionNotice]);
+
+  const onExportCaptions = useCallback(async () => {
+    if (transcript === null || mediaPath === null) return;
+    const rr = await project.renderRanges();
+    if (rr === null || rr.ranges.length === 0) {
+      setCaptionNotice({
+        kind: "err",
+        text: "No kept ranges from the engine — restore words or reload the project.",
+      });
+      return;
+    }
+    const capOpts = CAPTION_STYLE_PRESETS[captionStylePreset].options;
+    const body =
+      captionSidecarFormat === "vtt"
+        ? buildCaptionsVttFromWords(transcript.words, deleted, capOpts, rr.ranges)
+        : buildCaptionsSrtFromWords(transcript.words, deleted, capOpts, rr.ranges);
+    if (!body.trim()) {
+      setCaptionNotice({
+        kind: "err",
+        text: "No kept words with timings — remove fewer words or re-transcribe.",
+      });
+      return;
+    }
+    const defaultPath =
+      captionSidecarFormat === "vtt" ? suggestCaptionsVttPath(mediaPath) : suggestCaptionsPath(mediaPath);
+    const out = await saveDialog({
+      title: captionSidecarFormat === "vtt" ? "Export captions (WebVTT)" : "Export captions (SubRip)",
+      defaultPath,
+      filters:
+        captionSidecarFormat === "vtt"
+          ? [{ name: "WebVTT", extensions: ["vtt"] }]
+          : [{ name: "SubRip", extensions: ["srt"] }],
+    });
+    if (typeof out !== "string") return;
+    try {
+      const { writeTextFile } = await import("@tauri-apps/plugin-fs");
+      await writeTextFile(out, body);
+      setCaptionNotice({ kind: "ok", text: basename(out) });
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      setCaptionNotice({ kind: "err", text: msg });
+    }
+  }, [transcript, mediaPath, deleted, project, captionSidecarFormat, captionStylePreset]);
+
+  const onPostprocessEnrich = useCallback(async () => {
+    if (transcript === null || mediaPath === null) return;
+    setEnrichBusy(true);
+    setEnrichNotice(null);
+    try {
+      const r = await getAIClient().postprocess(mediaPath, transcript, {
+        scene_threshold: sceneThreshold,
+        speaker_gap_seconds: speakerGapSeconds,
+        diarization: diarizationMode,
+      });
+      setStatus((prev) => {
+        if (prev.kind !== "ready") return prev;
+        return { ...prev, transcript: r.transcript };
+      });
+      const nScenes = r.scene_cut_ticks.length;
+      const src = r.scene_detection === "ffmpeg" ? "FFmpeg scene filter" : "unavailable (skipped)";
+      const diLabel =
+        r.diarization_method === "pyannote" ? "Pyannote diarization" : "Gap speaker hints";
+      setEnrichNotice(`${diLabel} · ${nScenes} scene cuts (${src}).`);
+    } catch (e) {
+      const msg = e instanceof AIServiceError ? e.detail : e instanceof Error ? e.message : String(e);
+      setEnrichNotice(`Analyze failed: ${msg}`);
+    } finally {
+      setEnrichBusy(false);
+    }
+  }, [transcript, mediaPath, sceneThreshold, speakerGapSeconds, diarizationMode]);
+
+  useEffect(() => {
+    if (enrichNotice === null) return;
+    const t = window.setTimeout(() => setEnrichNotice(null), 10000);
+    return () => window.clearTimeout(t);
+  }, [enrichNotice]);
 
   const onDismissError = useCallback(() => {
     setStatus((s) => (s.kind === "error" && s.previous ? s.previous : { kind: "idle" }));
@@ -453,6 +707,39 @@ export function TranscriptEditorPane({
   }, [project, transcript, ingest]);
 
   const onUndoAutoClean = useCallback(async () => {
+    await project.undo();
+  }, [project]);
+
+  const onAutoCleanSilence = useCallback(async () => {
+    if (transcript === null || ingest === null || mediaPath === null) return;
+    setSilenceStripBusy(true);
+    try {
+      const r = await getAIClient().silentWords(mediaPath, transcript, {
+        noise_db: silenceNoiseDb,
+        min_duration_s: silenceMinDuration,
+        overlap_ratio: silenceOverlap,
+      });
+      const { ops, wordIndices } = buildWordIndexDeleteOps(transcript, ingest, r.word_indices);
+      if (ops.length === 0) {
+        setEnrichNotice("Strip silence: no words matched dead-air detection.");
+        return;
+      }
+      const fr = await project.applyBatch(ops, { group_undo: true });
+      if (!fr.ok) return;
+      setSilenceStrip({
+        count: ops.length,
+        afterHead: fr.result.head ?? null,
+        wordIndices,
+      });
+    } catch (e) {
+      const msg = e instanceof AIServiceError ? e.detail : e instanceof Error ? e.message : String(e);
+      setEnrichNotice(`Strip silence failed: ${msg}`);
+    } finally {
+      setSilenceStripBusy(false);
+    }
+  }, [transcript, ingest, mediaPath, project, silenceNoiseDb, silenceMinDuration, silenceOverlap]);
+
+  const onUndoSilenceStrip = useCallback(async () => {
     await project.undo();
   }, [project]);
 
@@ -527,6 +814,20 @@ export function TranscriptEditorPane({
         </button>
       </header>
 
+      {bootstrapMediaPath &&
+      !whisperModel.trim() &&
+      status.kind === "idle" && (
+        <div className="flex shrink-0 items-start gap-2 border-b border-violet-900/35 bg-violet-950/20 px-3 py-2 text-[11px] text-violet-100/95">
+          <Mic className="mt-0.5 h-3.5 w-3.5 shrink-0 text-violet-400/90" strokeWidth={2} />
+          <p className="min-w-0 leading-snug">
+            <span className="font-semibold text-violet-200">Media Pool</span> — ready to transcribe{" "}
+            <span className="font-mono text-zinc-200">{basename(bootstrapMediaPath)}</span>.
+            Choose a <span className="text-zinc-300">Whisper model</span> above; transcription starts
+            automatically.
+          </p>
+        </div>
+      )}
+
       {mediaPath !== null && (
         <div className="flex h-8 shrink-0 items-center gap-2 border-b border-zinc-800/80 bg-zinc-900/35 px-3 text-[11px]">
           <Mic className="h-3.5 w-3.5 shrink-0 text-zinc-600" strokeWidth={2} />
@@ -542,25 +843,82 @@ export function TranscriptEditorPane({
         </div>
       )}
 
-      {autoClean !== null && project.head?.head === autoClean.afterHead ? (
-        <div className="flex h-9 shrink-0 items-center justify-between gap-2 border-b border-emerald-900/40 bg-emerald-950/25 px-3 text-[11px] text-emerald-100/95">
-          <span className="inline-flex items-start gap-2">
-            <Sparkles className="mt-0.5 h-3.5 w-3.5 shrink-0 text-emerald-400/90" strokeWidth={2} />
-            <span>
-              Removed <strong className="font-semibold">{autoClean.count}</strong> filler sound
-              {autoClean.count === 1 ? "" : "s"}. One{" "}
-              <span className="inline-flex items-center gap-0.5 align-middle">
-                <Kbd>{mod}</Kbd>
-                <Kbd>Z</Kbd>
-              </span>{" "}
-              undoes the batch.
+      {transcript !== null &&
+        transcript.segments.some((s) => s.speaker != null && String(s.speaker).length > 0) && (
+          <div className="flex shrink-0 flex-wrap items-center gap-x-2 gap-y-1 border-b border-zinc-800/60 bg-zinc-900/25 px-3 py-1.5 text-[10px] text-zinc-500">
+            <span className="font-semibold uppercase tracking-wide text-zinc-600">Speakers</span>
+            <span className="text-zinc-600">(from Analyze)</span>
+            <span className="min-w-0 truncate font-mono text-zinc-400">
+              {[...new Set(transcript.segments.map((s) => s.speaker).filter(Boolean))].join(" · ")}
             </span>
-          </span>
+          </div>
+        )}
+
+      {autoClean !== null && project.head?.head === autoClean.afterHead ? (
+        <div className="flex min-h-9 shrink-0 flex-col gap-1 border-b border-emerald-900/40 bg-emerald-950/25 px-3 py-1.5 text-[11px] text-emerald-100/95 sm:flex-row sm:items-start sm:justify-between sm:gap-2 sm:py-1">
+          <div className="flex min-w-0 flex-1 flex-col gap-1">
+            <span className="inline-flex items-start gap-2">
+              <Sparkles className="mt-0.5 h-3.5 w-3.5 shrink-0 text-emerald-400/90" strokeWidth={2} />
+              <span className="min-w-0">
+                Removed <strong className="font-semibold">{autoClean.count}</strong> filler sound
+                {autoClean.count === 1 ? "" : "s"}. One{" "}
+                <span className="inline-flex items-center gap-0.5 align-middle">
+                  <Kbd>{mod}</Kbd>
+                  <Kbd>Z</Kbd>
+                </span>{" "}
+                undoes the batch.
+              </span>
+            </span>
+            {autoCleanRemovedWordsPreview !== null ? (
+              <p
+                className="truncate pl-[calc(1.375rem+0.5rem)] font-mono text-[10px] leading-snug text-emerald-200/75"
+                title={autoCleanRemovedWordsTitle || undefined}
+              >
+                <span className="text-emerald-400/80">Words:</span> {autoCleanRemovedWordsPreview}
+              </p>
+            ) : null}
+          </div>
           <button
             type="button"
             onClick={() => void onUndoAutoClean()}
             disabled={!project.canUndo}
-            className="inline-flex h-7 shrink-0 items-center gap-1 rounded-md border border-emerald-700/60 bg-emerald-900/40 px-2 font-medium text-emerald-50 hover:bg-emerald-800/50 disabled:cursor-not-allowed disabled:opacity-40"
+            className="inline-flex h-7 shrink-0 items-center gap-1 self-end rounded-md border border-emerald-700/60 bg-emerald-900/40 px-2 font-medium text-emerald-50 hover:bg-emerald-800/50 disabled:cursor-not-allowed disabled:opacity-40 sm:self-start"
+          >
+            <RotateCcw className="h-3.5 w-3.5" strokeWidth={2} />
+            Undo
+          </button>
+        </div>
+      ) : null}
+
+      {silenceStrip !== null && project.head?.head === silenceStrip.afterHead ? (
+        <div className="flex min-h-9 shrink-0 flex-col gap-1 border-b border-sky-900/40 bg-sky-950/20 px-3 py-1.5 text-[11px] text-sky-100/95 sm:flex-row sm:items-start sm:justify-between sm:gap-2 sm:py-1">
+          <div className="flex min-w-0 flex-1 flex-col gap-1">
+            <span className="inline-flex items-start gap-2">
+              <VolumeX className="mt-0.5 h-3.5 w-3.5 shrink-0 text-sky-400/90" strokeWidth={2} />
+              <span className="min-w-0">
+                Stripped <strong className="font-semibold">{silenceStrip.count}</strong> mostly-silent token
+                {silenceStrip.count === 1 ? "" : "s"} (FFmpeg silencedetect vs Whisper). One{" "}
+                <span className="inline-flex items-center gap-0.5 align-middle">
+                  <Kbd>{mod}</Kbd>
+                  <Kbd>Z</Kbd>
+                </span>{" "}
+                undoes the batch.
+              </span>
+            </span>
+            {silenceStripRemovedWordsPreview !== null ? (
+              <p
+                className="truncate pl-[calc(1.375rem+0.5rem)] font-mono text-[10px] leading-snug text-sky-200/75"
+                title={silenceStripRemovedWordsTitle || undefined}
+              >
+                <span className="text-sky-400/80">Words:</span> {silenceStripRemovedWordsPreview}
+              </p>
+            ) : null}
+          </div>
+          <button
+            type="button"
+            onClick={() => void onUndoSilenceStrip()}
+            disabled={!project.canUndo}
+            className="inline-flex h-7 shrink-0 items-center gap-1 self-end rounded-md border border-sky-700/60 bg-sky-900/35 px-2 font-medium text-sky-50 hover:bg-sky-800/45 disabled:cursor-not-allowed disabled:opacity-40 sm:self-start"
           >
             <RotateCcw className="h-3.5 w-3.5" strokeWidth={2} />
             Undo
@@ -580,8 +938,158 @@ export function TranscriptEditorPane({
           />
 
           {transcript !== null && status.kind !== "ingesting" && (
-            <footer className="flex h-12 shrink-0 items-center gap-2 border-t border-zinc-800/80 bg-[var(--cut-bg-panel)] px-3">
-              <span className="flex min-w-0 flex-1 items-center gap-1.5 text-[11px] text-zinc-500">
+            <footer className="flex min-h-12 shrink-0 flex-col gap-1 border-t border-zinc-800/80 bg-[var(--cut-bg-panel)] px-3 py-1.5">
+              <details className="text-[11px] text-zinc-500">
+                <summary className="cursor-pointer select-none text-zinc-600 hover:text-zinc-400">
+                  Export & caption options
+                </summary>
+                <div className="mt-1 flex flex-wrap items-center gap-x-3 gap-y-1 pb-0.5">
+                  <label className="inline-flex items-center gap-1">
+                    <span className="text-zinc-600">Video scale</span>
+                    <select
+                      value={exportVideoPreset}
+                      onChange={(e) => setExportVideoPreset(e.target.value as ExportVideoPresetId)}
+                      disabled={isBusy}
+                      className="rounded border border-zinc-700 bg-zinc-900 py-0.5 pl-1 pr-6 text-[11px] text-zinc-200"
+                    >
+                      {(Object.keys(EXPORT_VIDEO_PRESET_LABELS) as ExportVideoPresetId[]).map((id) => (
+                        <option key={id} value={id}>
+                          {EXPORT_VIDEO_PRESET_LABELS[id]}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                  <label className="inline-flex cursor-pointer items-center gap-1.5 text-zinc-500">
+                    <input
+                      type="checkbox"
+                      checked={burnInCaptions}
+                      onChange={(e) => setBurnInCaptions(e.target.checked)}
+                      disabled={isBusy}
+                      className="rounded border-zinc-600 bg-zinc-900"
+                    />
+                    <span>Burn-in captions</span>
+                  </label>
+                  <label className="inline-flex items-center gap-1">
+                    <span className="text-zinc-600">Sidecar</span>
+                    <select
+                      value={captionSidecarFormat}
+                      onChange={(e) => setCaptionSidecarFormat(e.target.value as CaptionSidecarFormat)}
+                      disabled={isBusy}
+                      className="rounded border border-zinc-700 bg-zinc-900 py-0.5 pl-1 pr-6 text-[11px] text-zinc-200"
+                    >
+                      <option value="srt">SubRip (.srt)</option>
+                      <option value="vtt">WebVTT (.vtt)</option>
+                    </select>
+                  </label>
+                  <label className="inline-flex items-center gap-1">
+                    <span className="text-zinc-600">Caption style</span>
+                    <select
+                      value={captionStylePreset}
+                      onChange={(e) => setCaptionStylePreset(e.target.value as CaptionStylePresetId)}
+                      disabled={isBusy}
+                      className="max-w-[9rem] rounded border border-zinc-700 bg-zinc-900 py-0.5 pl-1 pr-6 text-[11px] text-zinc-200"
+                      title={CAPTION_STYLE_PRESETS[captionStylePreset].hint}
+                    >
+                      {(Object.keys(CAPTION_STYLE_PRESETS) as CaptionStylePresetId[]).map((id) => (
+                        <option key={id} value={id} title={CAPTION_STYLE_PRESETS[id].hint}>
+                          {CAPTION_STYLE_PRESETS[id].label}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                </div>
+              </details>
+              <details className="text-[11px] text-zinc-500">
+                <summary className="cursor-pointer select-none text-zinc-600 hover:text-zinc-400">
+                  Analyze & dead-air strip
+                </summary>
+                <div className="mt-1 flex flex-wrap items-center gap-x-3 gap-y-1 pb-0.5">
+                  <label className="inline-flex items-center gap-1">
+                    <span className="text-zinc-600">Scene threshold</span>
+                    <input
+                      type="number"
+                      step={0.02}
+                      min={0.1}
+                      max={0.9}
+                      value={sceneThreshold}
+                      onChange={(e) => setSceneThreshold(Number.parseFloat(e.target.value) || 0.34)}
+                      disabled={isBusy}
+                      className="w-16 rounded border border-zinc-700 bg-zinc-900 px-1 py-0.5 text-[11px] text-zinc-200"
+                      title="FFmpeg scene filter sensitivity (lower = more cuts)"
+                    />
+                  </label>
+                  <label className="inline-flex items-center gap-1">
+                    <span className="text-zinc-600">Speaker gap (s)</span>
+                    <input
+                      type="number"
+                      step={0.05}
+                      min={0.2}
+                      max={5}
+                      value={speakerGapSeconds}
+                      onChange={(e) => setSpeakerGapSeconds(Number.parseFloat(e.target.value) || 1.25)}
+                      disabled={isBusy}
+                      className="w-14 rounded border border-zinc-700 bg-zinc-900 px-1 py-0.5 text-[11px] text-zinc-200"
+                      title="Minimum silence between Whisper segments to bump SPEAKER_xx (heuristic)"
+                    />
+                  </label>
+                  <label className="inline-flex items-center gap-1">
+                    <span className="text-zinc-600">Diarization</span>
+                    <select
+                      value={diarizationMode}
+                      onChange={(e) => setDiarizationMode(e.target.value as DiarizationRequestMode)}
+                      disabled={isBusy}
+                      className="max-w-[8rem] rounded border border-zinc-700 bg-zinc-900 py-0.5 pl-1 pr-6 text-[11px] text-zinc-200"
+                      title="Pyannote needs pip install '.[diarize]' and CUT_AI_HF_TOKEN on cut-ai"
+                    >
+                      <option value="auto">Auto (server default)</option>
+                      <option value="heuristic">Gap heuristic</option>
+                      <option value="pyannote">Pyannote</option>
+                    </select>
+                  </label>
+                  <label className="inline-flex items-center gap-1">
+                    <span className="text-zinc-600">Silence noise dB</span>
+                    <input
+                      type="number"
+                      step={1}
+                      min={-90}
+                      max={-10}
+                      value={silenceNoiseDb}
+                      onChange={(e) => setSilenceNoiseDb(Number.parseFloat(e.target.value) || -40)}
+                      disabled={isBusy}
+                      className="w-14 rounded border border-zinc-700 bg-zinc-900 px-1 py-0.5 text-[11px] text-zinc-200"
+                    />
+                  </label>
+                  <label className="inline-flex items-center gap-1">
+                    <span className="text-zinc-600">Min silence (s)</span>
+                    <input
+                      type="number"
+                      step={0.05}
+                      min={0.08}
+                      max={5}
+                      value={silenceMinDuration}
+                      onChange={(e) => setSilenceMinDuration(Number.parseFloat(e.target.value) || 0.45)}
+                      disabled={isBusy}
+                      className="w-14 rounded border border-zinc-700 bg-zinc-900 px-1 py-0.5 text-[11px] text-zinc-200"
+                    />
+                  </label>
+                  <label className="inline-flex items-center gap-1">
+                    <span className="text-zinc-600">Overlap</span>
+                    <input
+                      type="number"
+                      step={0.05}
+                      min={0.15}
+                      max={1}
+                      value={silenceOverlap}
+                      onChange={(e) => setSilenceOverlap(Number.parseFloat(e.target.value) || 0.55)}
+                      disabled={isBusy}
+                      className="w-14 rounded border border-zinc-700 bg-zinc-900 px-1 py-0.5 text-[11px] text-zinc-200"
+                      title="Min fraction of word duration overlapping silence to strip"
+                    />
+                  </label>
+                </div>
+              </details>
+              <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
+              <span className="flex min-w-0 flex-1 basis-[12rem] items-center gap-1.5 text-[11px] text-zinc-500">
                 {deleted.size > 0 ? (
                   <button
                     type="button"
@@ -619,11 +1127,105 @@ export function TranscriptEditorPane({
                 <Eraser className="h-3.5 w-3.5" strokeWidth={2} />
                 Auto-clean
               </button>
+              <button
+                type="button"
+                onClick={() => void onAutoCleanSilence()}
+                disabled={
+                  status.kind === "exporting"
+                  || keptWordCount === 0
+                  || silenceStripBusy
+                  || isBusy
+                  || ingest === null
+                }
+                className={cn(
+                  "inline-flex h-7 shrink-0 items-center gap-1 rounded-md border px-2 text-[11px] font-medium transition-colors",
+                  status.kind === "exporting"
+                  || keptWordCount === 0
+                  || silenceStripBusy
+                  || isBusy
+                  || ingest === null
+                    ? "cursor-not-allowed border-transparent bg-zinc-900/40 text-zinc-600 opacity-40"
+                    : "border-sky-800/50 bg-sky-950/25 text-sky-100 hover:bg-sky-900/35",
+                )}
+                title="Delete words that mostly overlap FFmpeg silencedetect intervals (one ⌘Z)"
+              >
+                {silenceStripBusy ? (
+                  <Loader2 className="h-3.5 w-3.5 animate-spin" strokeWidth={2} />
+                ) : (
+                  <VolumeX className="h-3.5 w-3.5" strokeWidth={2} />
+                )}
+                Strip silence
+              </button>
+              <button
+                type="button"
+                onClick={() => setRemovalDiffOpen(true)}
+                disabled={deleted.size === 0 || isBusy}
+                className={cn(
+                  "inline-flex h-7 shrink-0 items-center gap-1 rounded-md border px-2 text-[11px] font-medium transition-colors",
+                  deleted.size === 0 || isBusy
+                    ? "cursor-not-allowed border-transparent bg-zinc-900/40 text-zinc-600 opacity-40"
+                    : "border-zinc-700 bg-zinc-900 text-zinc-300 hover:border-zinc-600 hover:bg-zinc-800",
+                )}
+                title="Compare original wording vs current cut"
+              >
+                <GitCompare className="h-3.5 w-3.5" strokeWidth={2} />
+                Diff
+              </button>
+              <button
+                type="button"
+                onClick={() => void onPostprocessEnrich()}
+                disabled={isBusy || enrichBusy || keptWordCount === 0}
+                className={cn(
+                  "inline-flex h-7 shrink-0 items-center gap-1 rounded-md border px-2 text-[11px] font-medium transition-colors",
+                  isBusy || enrichBusy || keptWordCount === 0
+                    ? "cursor-not-allowed border-transparent bg-zinc-900/40 text-zinc-600 opacity-40"
+                    : "border-violet-800/50 bg-violet-950/35 text-violet-100 hover:bg-violet-900/45",
+                )}
+                title="Scene cuts + speakers (pyannote optional, see Analyze options)"
+              >
+                {enrichBusy ? (
+                  <Loader2 className="h-3.5 w-3.5 animate-spin" strokeWidth={2} />
+                ) : (
+                  <Sparkles className="h-3.5 w-3.5" strokeWidth={2} />
+                )}
+                Analyze
+              </button>
               {exportSummary !== null && (
                 <span className="hidden max-w-[40%] truncate text-[11px] text-emerald-400 sm:inline" title={exportSummary.outputPath}>
                   {basename(exportSummary.outputPath)} ({formatBytes(exportSummary.sizeBytes)})
                 </span>
               )}
+              {captionNotice !== null ? (
+                <span
+                  className={cn(
+                    "max-w-full truncate text-[11px]",
+                    captionNotice.kind === "ok" ? "text-sky-400" : "text-rose-400",
+                  )}
+                  title={captionNotice.text}
+                >
+                  {captionNotice.kind === "ok" ? `Captions: ${captionNotice.text}` : captionNotice.text}
+                </span>
+              ) : null}
+              {enrichNotice !== null ? (
+                <span className="max-w-full truncate text-[11px] text-violet-400" title={enrichNotice}>
+                  {enrichNotice}
+                </span>
+              ) : null}
+              <button
+                type="button"
+                onClick={() => void onExportCaptions()}
+                disabled={status.kind === "exporting" || keptWordCount === 0}
+                title="Export captions (.srt / .vtt). Times match exported recut timeline."
+                className={cn(
+                  "inline-flex h-7 shrink-0 items-center gap-1 rounded-md border px-2 text-[11px] font-medium transition-colors",
+                  status.kind === "exporting" || keptWordCount === 0
+                    ? "cursor-not-allowed border-transparent bg-zinc-900/40 text-zinc-600 opacity-40"
+                    : "border-zinc-700 bg-zinc-900 text-zinc-300 hover:border-zinc-600 hover:bg-zinc-800",
+                )}
+              >
+                <Captions className="h-3.5 w-3.5" strokeWidth={2} />
+                Captions
+              </button>
               <button
                 type="button"
                 onClick={() => void onExport()}
@@ -647,10 +1249,18 @@ export function TranscriptEditorPane({
                   </>
                 )}
               </button>
+              </div>
             </footer>
           )}
         </div>
       </div>
+      {removalDiffOpen && transcript !== null ? (
+        <TranscriptRemovalDiff
+          words={transcript.words}
+          deleted={deleted}
+          onClose={() => setRemovalDiffOpen(false)}
+        />
+      ) : null}
     </div>
   );
 }
@@ -774,6 +1384,11 @@ function TranscriptBody({
             <FileVideo className="h-4 w-4" strokeWidth={2} />
             Open video
           </button>
+          <div className="max-w-sm text-xs leading-relaxed text-zinc-600">
+            Or stay on <span className="text-zinc-500">Timeline</span>, import in Media, then{" "}
+            <strong className="font-medium text-zinc-500">Transcribe…</strong> — we open this tab when a Whisper model is
+            selected.
+          </div>
           <div className="text-xs text-zinc-600">
             Toggle words to remove them; export keeps the rest.{" "}
             <span className="inline-flex items-center gap-0.5 align-middle">

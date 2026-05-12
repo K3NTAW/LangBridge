@@ -68,6 +68,10 @@ export interface UseEngineProject extends State {
    * preview re-queries `preview_decode_path` (proxy-first scrub).
    */
   proxyGenerate(sourceId: string, maxWidth?: number): Promise<ProxyGenerateResult | null>;
+  /**
+   * Same as [`proxyGenerate`], but failures do **not** set the hook's global engine error (optional ingest step).
+   */
+  proxyGenerateOptional(sourceId: string, maxWidth?: number): Promise<ProxyGenerateResult | null>;
   clearHistory(): Promise<void>;
   undo(): Promise<UndoResult | null>;
   redo(): Promise<RedoResult | null>;
@@ -317,6 +321,21 @@ export function useEngineProject(): UseEngineProject {
     [setError, setHeadFrom],
   );
 
+  const proxyGenerateOptional = useCallback(
+    async (sourceId: string, maxWidth?: number): Promise<ProxyGenerateResult | null> => {
+      setState((s) => ({ ...s, busy: true, error: null }));
+      try {
+        const r = await getEngineClient().proxyGenerate(sourceId, maxWidth);
+        setHeadFrom(r);
+        return r;
+      } catch {
+        setState((s) => ({ ...s, busy: false }));
+        return null;
+      }
+    },
+    [setHeadFrom],
+  );
+
   return {
     ...state,
     canUndo: state.head?.can_undo ?? false,
@@ -328,6 +347,7 @@ export function useEngineProject(): UseEngineProject {
     apply,
     applyBatch,
     proxyGenerate,
+    proxyGenerateOptional,
     clearHistory,
     undo,
     redo,

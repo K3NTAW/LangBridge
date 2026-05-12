@@ -8,6 +8,8 @@
  * reads that file.
  */
 
+import { iterateSseDataLines } from "./planSse";
+
 const DEFAULT_BASE_URL =
   (import.meta.env.VITE_CUT_AI_URL as string | undefined) ??
   "http://127.0.0.1:8765";
@@ -49,7 +51,53 @@ export interface RecutResult {
   n_ranges: number;
 }
 
+/** Optional knobs for ``POST /v1/recut`` (1080p cap, burned-in subtitles). */
+export interface RecutRequestOptions {
+  signal?: AbortSignal;
+  crf?: number;
+  preset?: string;
+  scale_max_height?: number | null;
+  subtitle_path?: string | null;
+  subtitle_force_style?: string | null;
+}
+
+/** ``POST /v1/postprocess`` — FFmpeg scenes + speaker labels (pyannote optional). */
+export interface PostprocessResult {
+  transcript: Transcript;
+  scene_cut_ticks: number[];
+  diarization_method: "heuristic_gap" | "pyannote";
+  scene_detection: "ffmpeg" | "none";
+}
+
+/** ``POST /v1/silent_words`` — FFmpeg silencedetect overlap vs Whisper words. */
+export interface SilentWordsResult {
+  silence_interval_ticks: [number, number][];
+  word_indices: number[];
+}
+
+export type DiarizationRequestMode = "auto" | "heuristic" | "pyannote";
+
 export type Residency = "local" | "hybrid" | "cloud";
+
+export type PlanChunkKind = "op" | "rationale" | "question" | "done" | "error";
+
+/** Mirrors ``cut_ai.models.PlanContext`` — JSON body for ``POST /v1/plan``. */
+export interface PlanContextPayload {
+  project_id: string;
+  sequence_id: string;
+  selection?: string[];
+  playhead_ticks?: number;
+  scoped_window?: [number, number] | null;
+  retrieved_segments?: unknown[];
+  session_memory?: string[];
+  data_residency: Residency;
+}
+
+/** One SSE JSON payload from ``POST /v1/plan`` (see ``PlanChunk`` in cut-ai). */
+export interface PlanChunkPayload {
+  type: PlanChunkKind;
+  payload: Record<string, unknown>;
+}
 
 /**
  * Thrown when the cut-ai service responds with a non-2xx status. Carries
@@ -135,8 +183,44 @@ export interface AIClient {
     inputPath: string,
     outputPath: string,
     keptRanges: RecutRange[],
-    signal?: AbortSignal,
+    options?: RecutRequestOptions,
   ): Promise<RecutResult>;
+
+  /**
+   * Scene-cut ticks (FFmpeg) + speaker labels (pyannote optional).
+   */
+  postprocess(
+    mediaPath: string,
+    transcript: Transcript,
+    options?: {
+      signal?: AbortSignal;
+      scene_threshold?: number;
+      speaker_gap_seconds?: number;
+      diarization?: DiarizationRequestMode;
+    },
+  ): Promise<PostprocessResult>;
+
+  /** FFmpeg silencedetect vs Whisper word timings → indices to strip. */
+  silentWords(
+    mediaPath: string,
+    transcript: Transcript,
+    options?: {
+      signal?: AbortSignal;
+      noise_db?: number;
+      min_duration_s?: number;
+      overlap_ratio?: number;
+    },
+  ): Promise<SilentWordsResult>;
+
+  /**
+   * Stream edit-plan chunks from ``POST /v1/plan`` (SSE). Yields parsed
+   * [`PlanChunkPayload`] objects until the stream ends or the signal aborts.
+   */
+  plan(
+    command: string,
+    ctx: PlanContextPayload,
+    signal?: AbortSignal,
+  ): AsyncGenerator<PlanChunkPayload, void, undefined>;
 }
 
 class HttpAIClient implements AIClient {
@@ -172,20 +256,162 @@ class HttpAIClient implements AIClient {
     inputPath: string,
     outputPath: string,
     keptRanges: RecutRange[],
-    signal?: AbortSignal,
+    options?: RecutRequestOptions,
   ): Promise<RecutResult> {
-    return postJson<
-      {
-        input_path: string;
-        output_path: string;
-        kept_ranges: RecutRange[];
-      },
-      RecutResult
-    >(
+    const body: {
+      input_path: string;
+      output_path: string;
+      kept_ranges: RecutRange[];
+      crf?: number;
+      preset?: string;
+      scale_max_height?: number;
+      subtitle_path?: string;
+      subtitle_force_style?: string;
+    } = {
+      input_path: inputPath,
+      output_path: outputPath,
+      kept_ranges: keptRanges,
+    };
+    const o = options;
+    if (o?.crf !== undefined) body.crf = o.crf;
+    if (o?.preset !== undefined) body.preset = o.preset;
+    if (o?.scale_max_height != null && o.scale_max_height > 0) {
+      body.scale_max_height = o.scale_max_height;
+    }
+    if (o?.subtitle_path != null && o.subtitle_path.length > 0) {
+      body.subtitle_path = o.subtitle_path;
+    }
+    if (o?.subtitle_force_style != null && o.subtitle_force_style.length > 0) {
+      body.subtitle_force_style = o.subtitle_force_style;
+    }
+    return postJson<typeof body, RecutResult>(
       `${this.baseUrl}/v1/recut`,
-      { input_path: inputPath, output_path: outputPath, kept_ranges: keptRanges },
-      signal,
+      body,
+      o?.signal,
     );
+  }
+
+  async postprocess(
+    mediaPath: string,
+    transcript: Transcript,
+    opt?: {
+      signal?: AbortSignal;
+      scene_threshold?: number;
+      speaker_gap_seconds?: number;
+      diarization?: DiarizationRequestMode;
+    },
+  ): Promise<PostprocessResult> {
+    const body: {
+      media_path: string;
+      transcript: Transcript;
+      scene_threshold?: number;
+      speaker_gap_seconds?: number;
+      diarization?: DiarizationRequestMode;
+    } = { media_path: mediaPath, transcript };
+    if (opt?.scene_threshold !== undefined) body.scene_threshold = opt.scene_threshold;
+    if (opt?.speaker_gap_seconds !== undefined) body.speaker_gap_seconds = opt.speaker_gap_seconds;
+    if (opt?.diarization !== undefined) body.diarization = opt.diarization;
+    return postJson<typeof body, PostprocessResult>(
+      `${this.baseUrl}/v1/postprocess`,
+      body,
+      opt?.signal,
+    );
+  }
+
+  async silentWords(
+    mediaPath: string,
+    transcript: Transcript,
+    opt?: {
+      signal?: AbortSignal;
+      noise_db?: number;
+      min_duration_s?: number;
+      overlap_ratio?: number;
+    },
+  ): Promise<SilentWordsResult> {
+    const body: {
+      media_path: string;
+      transcript: Transcript;
+      noise_db?: number;
+      min_duration_s?: number;
+      overlap_ratio?: number;
+    } = { media_path: mediaPath, transcript };
+    if (opt?.noise_db !== undefined) body.noise_db = opt.noise_db;
+    if (opt?.min_duration_s !== undefined) body.min_duration_s = opt.min_duration_s;
+    if (opt?.overlap_ratio !== undefined) body.overlap_ratio = opt.overlap_ratio;
+    return postJson<typeof body, SilentWordsResult>(
+      `${this.baseUrl}/v1/silent_words`,
+      body,
+      opt?.signal,
+    );
+  }
+
+  async *plan(
+    command: string,
+    ctx: PlanContextPayload,
+    signal?: AbortSignal,
+  ): AsyncGenerator<PlanChunkPayload, void, undefined> {
+    const init: RequestInit = {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Accept: "text/event-stream",
+      },
+      body: JSON.stringify({ command, ctx }),
+    };
+    if (signal !== undefined) init.signal = signal;
+
+    let res: Response;
+    try {
+      res = await fetch(`${this.baseUrl}/v1/plan`, init);
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      throw new AIServiceError(0, `transport error: ${msg}`);
+    }
+
+    if (!res.ok) {
+      let detail = res.statusText;
+      try {
+        const j = (await res.json()) as { detail?: string };
+        if (typeof j.detail === "string") detail = j.detail;
+      } catch {
+        try {
+          detail = await res.text();
+        } catch {
+          // keep statusText
+        }
+      }
+      throw new AIServiceError(res.status, detail);
+    }
+
+    const body = res.body;
+    if (body === null) {
+      throw new AIServiceError(0, "cut-ai plan: empty response body");
+    }
+
+    const reader = body.getReader();
+    try {
+      for await (const ev of iterateSseDataLines(reader)) {
+        let row: unknown;
+        try {
+          row = JSON.parse(ev.data) as unknown;
+        } catch {
+          continue;
+        }
+        if (
+          typeof row === "object" &&
+          row !== null &&
+          "type" in row &&
+          typeof (row as { type: unknown }).type === "string" &&
+          "payload" in row &&
+          typeof (row as { payload: unknown }).payload === "object" &&
+          (row as { payload: unknown }).payload !== null
+        ) {
+          yield row as PlanChunkPayload;
+        }
+      }
+    } finally {
+      reader.releaseLock();
+    }
   }
 }
 

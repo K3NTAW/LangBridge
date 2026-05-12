@@ -18,16 +18,24 @@ function isNoVideoTrackRenderError(err: unknown): boolean {
  * (same constraint as preview/export single-source mode). New project
  * (modifier+N) + import, or Transcript for word-level timelines.
  */
+export type ImportMediaFullClipOk = {
+  ok: true;
+  /** Proxy step: skipped when no `proxyGenerate`; otherwise reflects callback result (full-res decode remains if failed). */
+  proxyOutcome: "skipped" | "success" | "failed";
+};
+
+export type ImportMediaFullClipResult = ImportMediaFullClipOk | { ok: false; message: string };
+
 export async function importMediaFullClip(
   mediaPath: string,
   applyBatch: (ops: Op[]) => Promise<ApplyBatchOutcome>,
   options?: {
-    /** Prefer preview proxy after import; failures are ignored (full-res decode remains). */
-    proxyGenerate?: (sourceId: SourceId) => Promise<unknown>;
+    /** Prefer preview proxy after import; return false or throw if proxy did not attach (full-res decode remains). */
+    proxyGenerate?: (sourceId: SourceId) => Promise<boolean>;
     /** Called after `applyBatch` succeeds and before optional proxy generation (UI progress). */
     onAfterBatch?: () => void;
   },
-): Promise<{ ok: true } | { ok: false; message: string }> {
+): Promise<ImportMediaFullClipResult> {
   let probe: PreviewProbePayload;
   try {
     probe = await previewProbe(mediaPath);
@@ -102,12 +110,14 @@ export async function importMediaFullClip(
   }
   options?.onAfterBatch?.();
   const pg = options?.proxyGenerate;
+  let proxyOutcome: ImportMediaFullClipOk["proxyOutcome"] = "skipped";
   if (pg !== undefined) {
     try {
-      await pg(sourceId);
+      const ok = await pg(sourceId);
+      proxyOutcome = ok ? "success" : "failed";
     } catch {
-      // Optional: proxy needs FFmpeg on the engine host PATH; full-res decode still works.
+      proxyOutcome = "failed";
     }
   }
-  return { ok: true };
+  return { ok: true, proxyOutcome };
 }

@@ -4,9 +4,13 @@ import { PreviewPane } from "./components/PreviewPane";
 import { MediaPoolPane } from "./components/MediaPoolPane";
 import { TopBar, type ViewMode } from "./components/TopBar";
 import { CommandPalette } from "./components/CommandPalette";
+import { FirstRunOverlay } from "./components/FirstRunOverlay";
+import { dismissOnboardingPersist, readOnboardingDismissed } from "./lib/onboardingStorage";
 import { TranscriptEditorPane } from "./components/TranscriptEditorPane";
 import { EngineToolbar } from "./components/EngineToolbar";
 import { getEngineClient, type TimelineLayoutResult } from "./lib/engineClient";
+import type { PlanContextPayload } from "./lib/aiClient";
+import { planCommandDataResidency } from "./lib/planResidency";
 import { secondsToTicksApprox, ticksToSecondsF64, type Tick } from "./lib/time";
 import { useTimelineTransport } from "./lib/useTimelineTransport";
 import { useEngineProject } from "./lib/useEngineProject";
@@ -21,6 +25,12 @@ export default function App() {
   const [timelineLayout, setTimelineLayout] = useState<TimelineLayoutResult | null>(null);
   const [bootstrapTranscribePath, setBootstrapTranscribePath] = useState<string | null>(null);
   const [whisperModel, setWhisperModel] = useState(loadStoredWhisperModel);
+  const [onboardingOpen, setOnboardingOpen] = useState(() => !readOnboardingDismissed());
+
+  const dismissOnboarding = useCallback(() => {
+    dismissOnboardingPersist();
+    setOnboardingOpen(false);
+  }, []);
 
   const onWhisperModelChange = useCallback((modelId: string) => {
     setWhisperModel(modelId);
@@ -44,7 +54,7 @@ export default function App() {
     return () => {
       cancelled = true;
     };
-  }, [project.head?.project_id, project.head?.head, project.head?.n_ops]);
+  }, [project.head, project.head?.project_id, project.head?.head, project.head?.n_ops]);
 
   /** Sequence extent when clips exist (caps scrub + transport to edit length). */
   const timelineEditExtentSeconds = useMemo(() => {
@@ -64,6 +74,20 @@ export default function App() {
     }
     return null;
   }, [timelineEditExtentSeconds, timelineDurationSeconds]);
+
+  const commandPalettePlanContext = useMemo((): PlanContextPayload | null => {
+    if (!project.head?.project_id) return null;
+    return {
+      project_id: project.head.project_id,
+      sequence_id: "default",
+      selection: [],
+      playhead_ticks: Number(playheadTicks),
+      scoped_window: null,
+      retrieved_segments: [],
+      session_memory: [],
+      data_residency: planCommandDataResidency(),
+    };
+  }, [project.head?.project_id, playheadTicks]);
 
   const { playing, setPlaying, togglePlaying } = useTimelineTransport({
     durationSeconds: playbackExtentSeconds,
@@ -208,6 +232,9 @@ export default function App() {
                   timelineDurationTicks={timelineLayout?.timeline_duration_ticks ?? 0}
                   playing={playing}
                   onTogglePlay={togglePlaying}
+                  hasProject={project.head !== null}
+                  engineBusy={project.busy}
+                  applyOp={project.apply}
                 />
               </div>
             </section>
@@ -215,7 +242,14 @@ export default function App() {
         )}
       </main>
 
-      {paletteOpen && <CommandPalette onClose={() => setPaletteOpen(false)} />}
+      {paletteOpen && (
+        <CommandPalette
+          onClose={() => setPaletteOpen(false)}
+          planContext={commandPalettePlanContext}
+        />
+      )}
+
+      {onboardingOpen ? <FirstRunOverlay onDismiss={dismissOnboarding} /> : null}
     </div>
   );
 }

@@ -2,42 +2,132 @@ import {
   ChevronRight,
   CornerDownLeft,
   Keyboard,
+  Loader2,
   MessageSquare,
   Sparkles,
   X,
 } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 
+import {
+  AIServiceError,
+  getAIClient,
+  type PlanChunkPayload,
+  type PlanContextPayload,
+} from "../lib/aiClient";
 import { modKeySymbol } from "../lib/modKey";
 import { Kbd } from "./ui/Kbd";
 
 interface Props {
   onClose: () => void;
+  /** When null, natural-language planning is disabled (no project). */
+  planContext: PlanContextPayload | null;
+}
+
+type PlanTurnStatus = "streaming" | "done" | "error";
+
+interface PlanTurn {
+  id: string;
+  command: string;
+  status: PlanTurnStatus;
+  rationale: string;
+  errorDetail?: string;
+}
+
+function summarizeChunk(chunk: PlanChunkPayload): string | null {
+  if (chunk.type === "rationale") {
+    const t = chunk.payload["text"];
+    return typeof t === "string" ? t : null;
+  }
+  if (chunk.type === "question") {
+    const p = chunk.payload["prompt"];
+    return typeof p === "string" ? `? ${p}` : null;
+  }
+  if (chunk.type === "op") {
+    return "[op]";
+  }
+  return null;
 }
 
 /**
- * AI command palette.
+ * AI command palette — **Phase 1:** streams `POST /v1/plan` (SSE) via [`getAIClient`].
  *
- * **Today:** UI shell. Submitting echoes the prompt into the panel as a
- * stub "plan" (no AI call yet). When `cut-ai` is wired up this submits
- * to `POST /v1/plan` and renders streaming `PlanChunk` events as a diff.
+ * Local residency yields an `error` chunk with a helpful message; hybrid/cloud stream stubs.
  */
-export function CommandPalette({ onClose }: Props) {
+export function CommandPalette({ onClose, planContext }: Props) {
   const [prompt, setPrompt] = useState("");
-  const [history, setHistory] = useState<string[]>([]);
+  const [turns, setTurns] = useState<PlanTurn[]>([]);
   const inputRef = useRef<HTMLInputElement>(null);
+  const abortRef = useRef<AbortController | null>(null);
   const mod = modKeySymbol();
 
   useEffect(() => {
     inputRef.current?.focus();
   }, []);
 
+  useEffect(() => {
+    return () => {
+      abortRef.current?.abort();
+    };
+  }, []);
+
+  async function runPlan(command: string) {
+    if (!planContext) return;
+
+    abortRef.current?.abort();
+    const ac = new AbortController();
+    abortRef.current = ac;
+
+    const id = crypto.randomUUID();
+    setTurns((t) => [...t, { id, command, status: "streaming", rationale: "" }]);
+
+    const bump = (patch: Partial<PlanTurn>) => {
+      setTurns((t) => t.map((row) => (row.id === id ? { ...row, ...patch } : row)));
+    };
+
+    try {
+      for await (const chunk of getAIClient().plan(command, planContext, ac.signal)) {
+        if (chunk.type === "error") {
+          const msg = chunk.payload["message"];
+          const code = chunk.payload["code"];
+          const detail =
+            typeof msg === "string"
+              ? msg
+              : typeof code === "string"
+                ? code
+                : "Planner error";
+          bump({ status: "error", errorDetail: detail });
+          return;
+        }
+        if (chunk.type === "done") {
+          bump({ status: "done" });
+          return;
+        }
+        const piece = summarizeChunk(chunk);
+        if (piece) {
+          setTurns((t) =>
+            t.map((row) =>
+              row.id === id ? { ...row, rationale: row.rationale + piece } : row,
+            ),
+          );
+        }
+      }
+      bump({ status: "done" });
+    } catch (e) {
+      if (ac.signal.aborted) return;
+      const detail =
+        e instanceof AIServiceError ? e.detail : e instanceof Error ? e.message : String(e);
+      bump({ status: "error", errorDetail: detail });
+    }
+  }
+
   function submit(e: React.FormEvent) {
     e.preventDefault();
     const p = prompt.trim();
     if (!p) return;
-    setHistory((h) => [...h, p]);
+    if (!planContext) return;
     setPrompt("");
+    void runPlan(p);
   }
 
   return (
@@ -72,19 +162,44 @@ export function CommandPalette({ onClose }: Props) {
               ref={inputRef}
               value={prompt}
               onChange={(e) => setPrompt(e.target.value)}
-              placeholder="e.g. cut silences over 0.8s in the second half"
-              className="min-w-0 flex-1 bg-transparent py-2 text-sm text-zinc-100 outline-none placeholder:text-zinc-600"
+              placeholder={
+                planContext
+                  ? "e.g. cut silences over 0.8s in the second half"
+                  : "Create or open a project first"
+              }
+              disabled={!planContext}
+              className="min-w-0 flex-1 bg-transparent py-2 text-sm text-zinc-100 outline-none placeholder:text-zinc-600 disabled:cursor-not-allowed disabled:opacity-50"
             />
           </div>
         </form>
 
-        {history.length > 0 ? (
-          <ul className="max-h-40 overflow-y-auto border-t border-zinc-800/80 bg-zinc-950/70 px-3 py-2 text-xs text-zinc-400">
-            {history.slice(-5).map((p, i) => (
-              <li key={i} className="flex gap-2 py-1.5">
-                <ChevronRight className="mt-0.5 h-3.5 w-3.5 shrink-0 text-zinc-600" strokeWidth={2} />
-                <span className="text-zinc-300">{p}</span>
-                <span className="ml-auto shrink-0 text-[10px] text-zinc-600">Planner offline</span>
+        {turns.length > 0 ? (
+          <ul className="max-h-44 overflow-y-auto border-t border-zinc-800/80 bg-zinc-950/70 px-3 py-2 text-xs">
+            {turns.slice(-6).map((turn) => (
+              <li key={turn.id} className="border-b border-zinc-800/40 py-2 last:border-b-0">
+                <div className="flex gap-2">
+                  <ChevronRight className="mt-0.5 h-3.5 w-3.5 shrink-0 text-zinc-600" strokeWidth={2} />
+                  <div className="min-w-0 flex-1 space-y-1">
+                    <div className="text-zinc-300">{turn.command}</div>
+                    {turn.rationale ? (
+                      <div className="whitespace-pre-wrap font-mono text-[11px] leading-snug text-zinc-400">
+                        {turn.rationale}
+                      </div>
+                    ) : null}
+                    {turn.status === "streaming" ? (
+                      <div className="flex items-center gap-1.5 text-[10px] text-zinc-500">
+                        <Loader2 className="h-3 w-3 animate-spin" strokeWidth={2} />
+                        cut-ai…
+                      </div>
+                    ) : null}
+                    {turn.status === "error" && turn.errorDetail ? (
+                      <div className="text-[11px] text-amber-200/90">{turn.errorDetail}</div>
+                    ) : null}
+                    {turn.status === "done" && !turn.errorDetail ? (
+                      <div className="text-[10px] text-zinc-600">cut-ai</div>
+                    ) : null}
+                  </div>
+                </div>
               </li>
             ))}
           </ul>

@@ -1,9 +1,13 @@
-import { Film, Pause, Play } from "lucide-react";
+import { Film, Pause, Play, Scissors, Trash2 } from "lucide-react";
 import { useCallback, useMemo, type PointerEvent } from "react";
 
 import type { TimelineClipLayoutWire } from "../lib/engineClient";
 import { cn } from "../lib/cn";
+import type { Op } from "../lib/ops";
+import { asId, type ClipId } from "../lib/ops";
+import { clipContainingPlayhead, clipUnderPlayheadStrict } from "../lib/timelineHitTest";
 import { formatTimecode, Rates, secondsToTicksApprox, ticksToSecondsF64, type Tick } from "../lib/time";
+import { ulidLite } from "../lib/ulid";
 
 const TRACK_LABEL_PX = 48;
 const FALLBACK_VISIBLE_DURATION_SEC = 30;
@@ -32,6 +36,9 @@ interface Props {
   timelineDurationTicks: number;
   playing: boolean;
   onTogglePlay: () => void;
+  hasProject: boolean;
+  engineBusy: boolean;
+  applyOp: (op: Op) => Promise<unknown>;
 }
 
 /**
@@ -45,9 +52,42 @@ export function TimelinePane({
   timelineDurationTicks,
   playing,
   onTogglePlay,
+  hasProject,
+  engineBusy,
+  applyOp,
 }: Props) {
   const tc = formatTimecode(playheadTicks, Rates.fps24);
   const canPlay = playbackExtentSeconds !== null && playbackExtentSeconds > 0;
+
+  const splitTarget = useMemo(
+    () => clipUnderPlayheadStrict(playheadTicks, clips),
+    [playheadTicks, clips],
+  );
+  const deleteTarget = useMemo(
+    () => clipContainingPlayhead(playheadTicks, clips),
+    [playheadTicks, clips],
+  );
+
+  const onSplitAtPlayhead = useCallback(async () => {
+    if (!splitTarget || !hasProject || engineBusy) return;
+    const op: Op = {
+      kind: "clip_split",
+      clip_id: asId<"ClipId">(splitTarget.clip_id) as ClipId,
+      at: playheadTicks,
+      new_clip_id: asId<"ClipId">(ulidLite()) as ClipId,
+    };
+    await applyOp(op);
+  }, [splitTarget, hasProject, engineBusy, playheadTicks, applyOp]);
+
+  const onDeleteRippleAtPlayhead = useCallback(async () => {
+    if (!deleteTarget || !hasProject || engineBusy) return;
+    const op: Op = {
+      kind: "clip_delete",
+      clip_id: asId<"ClipId">(deleteTarget.clip_id) as ClipId,
+      ripple: true,
+    };
+    await applyOp(op);
+  }, [deleteTarget, hasProject, engineBusy, applyOp]);
 
   const extentTicks = useMemo(() => {
     let e =
@@ -130,10 +170,40 @@ export function TimelinePane({
         <span>24 fps</span>
         <span className="text-zinc-600">·</span>
         <span>48 kHz</span>
-        <span className="ml-auto inline-flex items-center gap-1 rounded-md bg-zinc-900 px-2 py-0.5 text-[10px] uppercase tracking-wide text-zinc-500">
-          <Film className="h-3 w-3 opacity-80" strokeWidth={2} />
-          {clips.length === 0 ? "No clips" : `${clips.length} clip${clips.length === 1 ? "" : "s"}`}
-        </span>
+        <div className="ml-auto flex shrink-0 items-center gap-1">
+          <button
+            type="button"
+            disabled={!hasProject || engineBusy || splitTarget === null}
+            onClick={() => void onSplitAtPlayhead()}
+            className={cn(
+              "inline-flex h-7 w-7 items-center justify-center rounded-md border transition-colors",
+              !hasProject || engineBusy || splitTarget === null
+                ? "cursor-not-allowed border-transparent bg-zinc-900/30 text-zinc-600 opacity-40"
+                : "border-zinc-700 bg-zinc-900 text-zinc-300 hover:border-zinc-600 hover:bg-zinc-800",
+            )}
+            title="Split clip at playhead"
+          >
+            <Scissors className="h-3.5 w-3.5" strokeWidth={2} />
+          </button>
+          <button
+            type="button"
+            disabled={!hasProject || engineBusy || deleteTarget === null}
+            onClick={() => void onDeleteRippleAtPlayhead()}
+            className={cn(
+              "inline-flex h-7 w-7 items-center justify-center rounded-md border transition-colors",
+              !hasProject || engineBusy || deleteTarget === null
+                ? "cursor-not-allowed border-transparent bg-zinc-900/30 text-zinc-600 opacity-40"
+                : "border-zinc-700 bg-zinc-900 text-zinc-300 hover:border-zinc-600 hover:bg-zinc-800",
+            )}
+            title="Delete clip at playhead (ripple)"
+          >
+            <Trash2 className="h-3.5 w-3.5" strokeWidth={2} />
+          </button>
+          <span className="inline-flex items-center gap-1 rounded-md bg-zinc-900 px-2 py-0.5 text-[10px] uppercase tracking-wide text-zinc-500">
+            <Film className="h-3 w-3 opacity-80" strokeWidth={2} />
+            {clips.length === 0 ? "No clips" : `${clips.length} clip${clips.length === 1 ? "" : "s"}`}
+          </span>
+        </div>
       </div>
 
       <div
