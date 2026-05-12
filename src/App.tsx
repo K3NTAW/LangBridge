@@ -1,31 +1,34 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
-import { TimelinePane } from "./components/TimelinePane";
-import { PreviewPane } from "./components/PreviewPane";
+/**
+ * Sift — chat-first, folder-as-project AI video editor.
+ *
+ * Layout: folder pane (left) | transcript + chat (center) | preview (right).
+ *
+ * For Milestone A the chat panel is a placeholder; the user drives edits
+ * via the transcript pane's existing word-delete and auto-clean affordances.
+ * Milestone B replaces the placeholder with Claude tool-use chat.
+ */
+import { useCallback, useEffect, useState } from "react";
+
 import { MediaPoolPane } from "./components/MediaPoolPane";
-import { TopBar, type ViewMode } from "./components/TopBar";
-import { CommandPalette } from "./components/CommandPalette";
-import { FirstRunOverlay } from "./components/FirstRunOverlay";
-import { dismissOnboardingPersist, readOnboardingDismissed } from "./lib/onboardingStorage";
+import { PreviewPane } from "./components/PreviewPane";
+import { TopBar } from "./components/TopBar";
 import { TranscriptEditorPane } from "./components/TranscriptEditorPane";
 import { EngineToolbar } from "./components/EngineToolbar";
-import { getEngineClient, type TimelineLayoutResult } from "./lib/engineClient";
-import type { PlanContextPayload } from "./lib/aiClient";
-import { planCommandDataResidency } from "./lib/planResidency";
-import { secondsToTicksApprox, ticksToSecondsF64, type Tick } from "./lib/time";
-import { useTimelineTransport } from "./lib/useTimelineTransport";
+import { FirstRunOverlay } from "./components/FirstRunOverlay";
+import { dismissOnboardingPersist, readOnboardingDismissed } from "./lib/onboardingStorage";
 import { useEngineProject } from "./lib/useEngineProject";
 import { loadStoredWhisperModel, saveStoredWhisperModel } from "./lib/whisperModels";
 
 export default function App() {
   const project = useEngineProject();
-  const [paletteOpen, setPaletteOpen] = useState(false);
-  const [view, setView] = useState<ViewMode>("timeline");
-  const [playheadTicks, setPlayheadTicks] = useState<Tick>(0n);
-  const [timelineDurationSeconds, setTimelineDurationSeconds] = useState<number | null>(null);
-  const [timelineLayout, setTimelineLayout] = useState<TimelineLayoutResult | null>(null);
   const [bootstrapTranscribePath, setBootstrapTranscribePath] = useState<string | null>(null);
   const [whisperModel, setWhisperModel] = useState(loadStoredWhisperModel);
   const [onboardingOpen, setOnboardingOpen] = useState(() => !readOnboardingDismissed());
+
+  // Preview file produced by the segment-cache renderer. Null until
+  // Milestone A wires `lib/previewRender.ts` in.
+  const [previewPath] = useState<string | null>(null);
+  const [previewRendering] = useState<boolean>(false);
 
   const dismissOnboarding = useCallback(() => {
     dismissOnboardingPersist();
@@ -37,90 +40,10 @@ export default function App() {
     saveStoredWhisperModel(modelId);
   }, []);
 
-  useEffect(() => {
-    if (!project.head) {
-      setTimelineLayout(null);
-      return;
-    }
-    let cancelled = false;
-    void getEngineClient()
-      .timelineLayout()
-      .then((r) => {
-        if (!cancelled) setTimelineLayout(r);
-      })
-      .catch(() => {
-        if (!cancelled) setTimelineLayout(null);
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [project.head, project.head?.project_id, project.head?.head, project.head?.n_ops]);
-
-  /** Sequence extent when clips exist (caps scrub + transport to edit length). */
-  const timelineEditExtentSeconds = useMemo(() => {
-    if (!timelineLayout || timelineLayout.clips.length === 0) return null;
-    const ticks = timelineLayout.timeline_duration_ticks;
-    if (!Number.isFinite(ticks) || ticks <= 0) return null;
-    const sec = ticksToSecondsF64(BigInt(ticks));
-    return Number.isFinite(sec) && sec > 0 ? sec : null;
-  }, [timelineLayout]);
-
-  const playbackExtentSeconds = useMemo(() => {
-    if (timelineEditExtentSeconds !== null && timelineEditExtentSeconds > 0) {
-      return timelineEditExtentSeconds;
-    }
-    if (timelineDurationSeconds !== null && timelineDurationSeconds > 0) {
-      return timelineDurationSeconds;
-    }
-    return null;
-  }, [timelineEditExtentSeconds, timelineDurationSeconds]);
-
-  const commandPalettePlanContext = useMemo((): PlanContextPayload | null => {
-    if (!project.head?.project_id) return null;
-    return {
-      project_id: project.head.project_id,
-      sequence_id: "default",
-      selection: [],
-      playhead_ticks: Number(playheadTicks),
-      scoped_window: null,
-      retrieved_segments: [],
-      session_memory: [],
-      data_residency: planCommandDataResidency(),
-    };
-  }, [project.head?.project_id, playheadTicks]);
-
-  const { playing, setPlaying, togglePlaying } = useTimelineTransport({
-    durationSeconds: playbackExtentSeconds,
-    playheadTicks,
-    setPlayheadTicks,
-  });
-
-  const scrubPlayhead = useCallback((t: Tick) => {
-    setPlaying(false);
-    setPlayheadTicks(t);
-  }, [setPlaying, setPlayheadTicks]);
-
+  // Keyboard shortcuts: project lifecycle + undo/redo.
   useEffect(() => {
     function onKey(e: KeyboardEvent) {
       const mod = e.metaKey || e.ctrlKey;
-
-      if (!mod && view === "timeline" && e.code === "Space") {
-        const el = e.target as HTMLElement | null;
-        if (el?.closest("input, textarea, [contenteditable='true']")) return;
-        e.preventDefault();
-        togglePlaying();
-        return;
-      }
-
-      if (mod && e.key === "k") {
-        e.preventDefault();
-        setPaletteOpen((v) => !v);
-        return;
-      }
-      if (e.key === "Escape") {
-        setPaletteOpen(false);
-        return;
-      }
       if (!mod) return;
       switch (e.key.toLowerCase()) {
         case "n":
@@ -140,9 +63,6 @@ export default function App() {
           }
           break;
         case "z":
-          // Cmd-Z = undo, Cmd-Shift-Z = redo (the macOS convention).
-          // We also accept Cmd-Y as an alias for redo for muscle
-          // memory from other platforms.
           e.preventDefault();
           if (e.shiftKey) {
             void project.redo();
@@ -160,22 +80,7 @@ export default function App() {
     }
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [project, view, togglePlaying]);
-
-  useEffect(() => {
-    if (view !== "timeline") setPlaying(false);
-  }, [view, setPlaying]);
-
-  useEffect(() => {
-    setPlayheadTicks(0n);
-    setPlaying(false);
-  }, [project.head?.project_id, setPlaying]);
-
-  useEffect(() => {
-    if (playbackExtentSeconds === null || playbackExtentSeconds <= 0) return;
-    const maxT = secondsToTicksApprox(playbackExtentSeconds);
-    setPlayheadTicks((t) => (t > maxT ? maxT : t));
-  }, [playbackExtentSeconds]);
+  }, [project]);
 
   return (
     <div className="flex h-full flex-col bg-[var(--cut-bg-deep)] text-zinc-100">
@@ -183,71 +88,35 @@ export default function App() {
         info={project.info}
         head={project.head}
         error={project.error}
-        onOpenPalette={() => setPaletteOpen(true)}
-        view={view}
-        onChangeView={setView}
       />
       <EngineToolbar project={project} />
 
-      <main className="flex flex-1 overflow-hidden">
-        {view === "transcript" ? (
-          <section className="flex flex-1 flex-col">
-            <TranscriptEditorPane
-              project={project}
-              bootstrapMediaPath={bootstrapTranscribePath}
-              onBootstrapConsumed={() => setBootstrapTranscribePath(null)}
-              whisperModel={whisperModel}
-              onWhisperModelChange={onWhisperModelChange}
-            />
-          </section>
-        ) : (
-          <>
-            <aside className="w-72 shrink-0 border-r border-zinc-800/80 bg-[var(--cut-bg-deep)]">
-              <MediaPoolPane
-                project={project}
-                whisperModelSelected={Boolean(whisperModel.trim())}
-                onRequestTranscribe={(mediaPath) => {
-                  setBootstrapTranscribePath(mediaPath);
-                  setView("transcript");
-                }}
-              />
-            </aside>
-            <section className="flex flex-1 flex-col">
-              <div className="flex flex-1 items-center justify-center bg-black">
-                <PreviewPane
-                  project={project}
-                  playheadTicks={playheadTicks}
-                  onPlayheadTicksChange={scrubPlayhead}
-                  onTimelineDurationSecondsChange={setTimelineDurationSeconds}
-                  timelineEditExtentSeconds={timelineEditExtentSeconds}
-                  playing={playing}
-                />
-              </div>
-              <div className="h-80 shrink-0 border-t border-zinc-800/80 bg-[var(--cut-bg-deep)]">
-                <TimelinePane
-                  playheadTicks={playheadTicks}
-                  onPlayheadTicksChange={scrubPlayhead}
-                  playbackExtentSeconds={playbackExtentSeconds}
-                  clips={timelineLayout?.clips ?? []}
-                  timelineDurationTicks={timelineLayout?.timeline_duration_ticks ?? 0}
-                  playing={playing}
-                  onTogglePlay={togglePlaying}
-                  hasProject={project.head !== null}
-                  engineBusy={project.busy}
-                  applyOp={project.apply}
-                />
-              </div>
-            </section>
-          </>
-        )}
-      </main>
+      <main className="grid flex-1 grid-cols-[18rem_minmax(0,1fr)_28rem] overflow-hidden">
+        {/* Left: folder / media pane */}
+        <aside className="min-w-0 border-r border-zinc-800/80 bg-[var(--cut-bg-deep)]">
+          <MediaPoolPane
+            project={project}
+            whisperModelSelected={Boolean(whisperModel.trim())}
+            onRequestTranscribe={(mediaPath) => setBootstrapTranscribePath(mediaPath)}
+          />
+        </aside>
 
-      {paletteOpen && (
-        <CommandPalette
-          onClose={() => setPaletteOpen(false)}
-          planContext={commandPalettePlanContext}
-        />
-      )}
+        {/* Center: transcript editor (will gain a chat panel underneath in Milestone B) */}
+        <section className="flex min-w-0 flex-col overflow-hidden">
+          <TranscriptEditorPane
+            project={project}
+            bootstrapMediaPath={bootstrapTranscribePath}
+            onBootstrapConsumed={() => setBootstrapTranscribePath(null)}
+            whisperModel={whisperModel}
+            onWhisperModelChange={onWhisperModelChange}
+          />
+        </section>
+
+        {/* Right: preview */}
+        <section className="min-w-0 border-l border-zinc-800/80 bg-black">
+          <PreviewPane previewPath={previewPath} rendering={previewRendering} />
+        </section>
+      </main>
 
       {onboardingOpen ? <FirstRunOverlay onDismiss={dismissOnboarding} /> : null}
     </div>

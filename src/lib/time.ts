@@ -1,5 +1,5 @@
 /**
- * Tick-based time arithmetic — TypeScript mirror of `cut-engine/src/time.rs`.
+ * Tick-based time arithmetic — TypeScript mirror of `sift-engine/src/time.rs`.
  *
  * See {@link https://../docs/spec.md docs/spec.md §1} for the contract.
  *

@@ -1,13 +1,13 @@
 [package]
-name = "cut-app"
+name = "sift-app"
 version = "0.1.0"
-description = "CUT Tauri shell — host process for the React UI."
+description = "Sift Tauri shell — host process for the React UI."
 edition = "2024"
 rust-version = "1.85"
 publish = false
 
 [lib]
-name = "cut_app_lib"
+name = "sift_app_lib"
 crate-type = ["staticlib", "cdylib", "rlib"]
 
 [build-dependencies]
@@ -28,11 +28,13 @@ tokio = { version = "1.40", features = ["rt-multi-thread", "macros", "io-util", 
 
 # Engine crate (sibling workspace member). Used for SPEC_VERSION /
 # ENGINE_VERSION constants; the actual engine state lives in the
-# spawned `cut-engine-host` subprocess that this crate talks to over
+# spawned `sift-engine-host` subprocess that this crate talks to over
 # a UDS, see docs/architecture.md §2.1.
-cut-engine = { path = "../../cut-engine" }
+sift-engine = { path = "../../sift-engine" }
 
-# Native preview (milestone D): same FFmpeg stack as `engine-spike`.
+# FFmpeg used by the `preview_frame_png` / `preview_probe` Tauri commands.
+# Will be removed when the shell-side segment-cache renderer replaces the
+# legacy PNG-frame preview path (Milestone A).
 ffmpeg-next = { version = "8.0", default-features = false, features = ["codec", "format", "software-scaling"] }
 image = { version = "0.25", default-features = false, features = ["png"] }
 base64 = "0.22"

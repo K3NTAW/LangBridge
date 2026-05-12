@@ -1,5 +1,5 @@
 /**
- * Op language — TypeScript mirror of `cut-engine/src/ops.rs`.
+ * Op language — TypeScript mirror of `sift-engine/src/ops.rs`.
  *
  * **Source of truth is the Rust file.** When the engine adds a new op, mirror
  * it here. The two files MUST agree. A round-trip property test in CI verifies

@@ -1,7 +1,7 @@
-# cut-app
+# sift-app
 
 The Tauri shell. Hosts the React UI and (in Phase 0) bridges to the
-[`cut-engine`](../cut-engine) subprocess over a UNIX domain socket.
+[`sift-engine`](../sift-engine) subprocess over a UNIX domain socket.
 
 ## Status
 
@@ -47,8 +47,8 @@ src/
 ├── App.tsx                # top-level layout
 ├── index.css              # Tailwind directives + small overrides
 ├── lib/
-│   ├── time.ts            # Tick arithmetic (mirror of cut-engine/time.rs)
-│   ├── ops.ts             # Op language (mirror of cut-engine/ops.rs)
+│   ├── time.ts            # Tick arithmetic (mirror of sift-engine/time.rs)
+│   ├── ops.ts             # Op language (mirror of sift-engine/ops.rs)
 │   ├── engineClient.ts    # JSON-RPC client (stub)
 │   └── cn.ts              # clsx + tailwind-merge helper
 └── components/
@@ -69,7 +69,7 @@ src-tauri/
 
 ## TS ↔ Rust drift
 
-`src/lib/ops.ts` is a hand-mirror of `cut-engine/src/ops.rs`. When you
+`src/lib/ops.ts` is a hand-mirror of `sift-engine/src/ops.rs`. When you
 add an op variant in Rust, mirror it here in the same change. A CI
 contract test (Phase 0) round-trips every variant through both sides
 and fails if the JSON shape diverges.

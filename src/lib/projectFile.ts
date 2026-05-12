@@ -16,9 +16,9 @@ const PROJECT_EXT = "cut";
  */
 export async function pickSavePath(suggested = "Untitled"): Promise<string | null> {
   const path = await saveDialog({
-    title: "Save CUT Project",
+    title: "Save Sift Project",
     defaultPath: `${suggested}.${PROJECT_EXT}`,
-    filters: [{ name: "CUT Project", extensions: [PROJECT_EXT] }],
+    filters: [{ name: "Sift Project", extensions: [PROJECT_EXT] }],
   });
   if (!path) return null;
   return path.endsWith(`.${PROJECT_EXT}`) ? path : `${path}.${PROJECT_EXT}`;
@@ -27,10 +27,10 @@ export async function pickSavePath(suggested = "Untitled"): Promise<string | nul
 /** Show an "Open Project…" dialog. Returns the chosen path or `null`. */
 export async function pickOpenPath(): Promise<string | null> {
   const path = await openDialog({
-    title: "Open CUT Project",
+    title: "Open Sift Project",
     multiple: false,
     directory: false,
-    filters: [{ name: "CUT Project", extensions: [PROJECT_EXT] }],
+    filters: [{ name: "Sift Project", extensions: [PROJECT_EXT] }],
   });
   if (!path) return null;
   if (Array.isArray(path)) return path[0] ?? null;

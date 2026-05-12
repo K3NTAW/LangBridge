@@ -1,9 +1,9 @@
 /**
- * HTTP client for the cut-ai service.
+ * HTTP client for the sift-ai service.
  *
- * In dev / demo, cut-ai runs as a separate process on a fixed port (see
- * `cut-ai/cut_ai/__main__.py::DEMO_PORT`). In production the Tauri host
- * launches cut-ai with an OS-assigned port and writes a discovery file —
+ * In dev / demo, sift-ai runs as a separate process on a fixed port (see
+ * `sift-ai/sift_ai/__main__.py::DEMO_PORT`). In production the Tauri host
+ * launches sift-ai with an OS-assigned port and writes a discovery file —
  * a future patch will replace `DEFAULT_BASE_URL` with a function that
  * reads that file.
  */
@@ -11,7 +11,7 @@
 import { iterateSseDataLines } from "./planSse";
 
 const DEFAULT_BASE_URL =
-  (import.meta.env.VITE_CUT_AI_URL as string | undefined) ??
+  (import.meta.env.VITE_SIFT_AI_URL as string | undefined) ??
   "http://127.0.0.1:8765";
 
 /** Word-level timestamp from the AI service. */
@@ -81,7 +81,7 @@ export type Residency = "local" | "hybrid" | "cloud";
 
 export type PlanChunkKind = "op" | "rationale" | "question" | "done" | "error";
 
-/** Mirrors ``cut_ai.models.PlanContext`` — JSON body for ``POST /v1/plan``. */
+/** Mirrors ``sift_ai.models.PlanContext`` — JSON body for ``POST /v1/plan``. */
 export interface PlanContextPayload {
   project_id: string;
   sequence_id: string;
@@ -93,14 +93,14 @@ export interface PlanContextPayload {
   data_residency: Residency;
 }
 
-/** One SSE JSON payload from ``POST /v1/plan`` (see ``PlanChunk`` in cut-ai). */
+/** One SSE JSON payload from ``POST /v1/plan`` (see ``PlanChunk`` in sift-ai). */
 export interface PlanChunkPayload {
   type: PlanChunkKind;
   payload: Record<string, unknown>;
 }
 
 /**
- * Thrown when the cut-ai service responds with a non-2xx status. Carries
+ * Thrown when the sift-ai service responds with a non-2xx status. Carries
  * the parsed `detail` field if the body is JSON, or the raw text if not.
  */
 export class AIServiceError extends Error {
@@ -108,7 +108,7 @@ export class AIServiceError extends Error {
     public readonly status: number,
     public readonly detail: string,
   ) {
-    super(`cut-ai responded ${status}: ${detail}`);
+    super(`sift-ai responded ${status}: ${detail}`);
     this.name = "AIServiceError";
   }
 }
@@ -130,7 +130,7 @@ async function postJson<TReq, TRes>(
   try {
     res = await fetch(url, init);
   } catch (e) {
-    // fetch only throws on transport errors; most likely cut-ai isn't running.
+    // fetch only throws on transport errors; most likely sift-ai isn't running.
     const msg = e instanceof Error ? e.message : String(e);
     throw new AIServiceError(0, `transport error: ${msg}`);
   }
@@ -156,7 +156,7 @@ async function postJson<TReq, TRes>(
  */
 export interface TranscribeOptions {
   signal?: AbortSignal;
-  /** faster-whisper model id (e.g. base, small, large-v3). Sent as ``whisper_model`` to cut-ai. */
+  /** faster-whisper model id (e.g. base, small, large-v3). Sent as ``whisper_model`` to sift-ai. */
   whisper_model?: string;
 }
 
@@ -385,7 +385,7 @@ class HttpAIClient implements AIClient {
 
     const body = res.body;
     if (body === null) {
-      throw new AIServiceError(0, "cut-ai plan: empty response body");
+      throw new AIServiceError(0, "sift-ai plan: empty response body");
     }
 
     const reader = body.getReader();

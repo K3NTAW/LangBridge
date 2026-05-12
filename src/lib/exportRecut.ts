@@ -1,11 +1,11 @@
 /**
- * Pure helpers for **Export → `render_ranges` → cut-ai `/v1/recut`** (Phase 1 regression surface).
+ * Pure helpers for **Export → `render_ranges` → sift-ai `/v1/recut`** (Phase 1 regression surface).
  */
 
 import type { RecutRange } from "./aiClient";
 import type { RenderRange } from "./engineClient";
 
-/** Map engine kept-range rows into cut-ai recut payload (tick-aligned segments). */
+/** Map engine kept-range rows into sift-ai recut payload (tick-aligned segments). */
 export function renderRangesToRecutRanges(
   ranges: readonly RenderRange[],
 ): RecutRange[] {

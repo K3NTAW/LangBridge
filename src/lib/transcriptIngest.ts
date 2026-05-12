@@ -11,7 +11,7 @@ import { asId, type ClipId, type Op, type SourceId, type TrackId } from "./ops";
 
 /**
  * One transcribed word, in tick units. Must match the JSON shape
- * cut-ai's `/v1/transcribe` returns; we don't import `TranscriptWord`
+ * sift-ai's `/v1/transcribe` returns; we don't import `TranscriptWord`
  * directly to keep this module free of HTTP types.
  */
 export interface IngestableWord {

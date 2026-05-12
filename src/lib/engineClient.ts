@@ -1,8 +1,8 @@
 /**
- * JSON-RPC client to the spawned `cut-engine-host` subprocess.
+ * JSON-RPC client to the spawned `sift-engine-host` subprocess.
  *
  * Implementation note: this module is a *thin* wrapper over Tauri's
- * `invoke()`. The Rust side (`cut-app/src-tauri/src/engine.rs`) holds
+ * `invoke()`. The Rust side (`sift-app/src-tauri/src/engine.rs`) holds
  * the actual UDS connection; from TypeScript's perspective the engine
  * is a set of `engine_*` Tauri commands.
  *
@@ -138,15 +138,6 @@ export interface PreviewPrimaryMediaResult {
   duration_ticks: number;
 }
 
-/** Result of JSON-RPC `proxy_generate`. */
-export interface ProxyGenerateResult {
-  head: string | null;
-  n_ops: number;
-  can_undo: boolean;
-  can_redo: boolean;
-  proxy_path: string;
-}
-
 /** Result of `inverse()`. The engine returns the inverse op, not applied. */
 export interface InverseResult {
   inverse: Op;
@@ -235,11 +226,6 @@ export interface EngineClient {
    */
   previewPrimaryMedia(): Promise<PreviewPrimaryMediaResult>;
   /**
-   * Writes an FFmpeg H.264 proxy beside the temp-dir convention and applies `source_set_proxy`.
-   * Requires `ffmpeg` on PATH where the engine subprocess runs.
-   */
-  proxyGenerate(sourceId: string, maxWidth?: number): Promise<ProxyGenerateResult>;
-  /**
    * Wipe the in-memory undo/redo log without touching project state.
    * Used after ingest so the user's first undo starts at the first
    * post-ingest edit.
@@ -293,13 +279,6 @@ class TauriEngineClient implements EngineClient {
   }
   async previewPrimaryMedia(): Promise<PreviewPrimaryMediaResult> {
     return await this.call("engine_preview_primary_media");
-  }
-  async proxyGenerate(sourceId: string, maxWidth?: number): Promise<ProxyGenerateResult> {
-    const payload: Record<string, unknown> = { sourceId };
-    if (maxWidth !== undefined) {
-      payload.maxWidth = maxWidth;
-    }
-    return await this.call("engine_proxy_generate", payload);
   }
   async clearHistory(): Promise<HistoryChange> {
     return await this.call("engine_clear_history");
@@ -356,9 +335,6 @@ class UnavailableEngineClient implements EngineClient {
   }
   async previewPrimaryMedia(): Promise<PreviewPrimaryMediaResult> {
     return this.fail("previewPrimaryMedia");
-  }
-  async proxyGenerate(_sourceId: string, _maxWidth?: number): Promise<ProxyGenerateResult> {
-    return this.fail("proxyGenerate");
   }
   async clearHistory(): Promise<HistoryChange> {
     return this.fail("clearHistory");

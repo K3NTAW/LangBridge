@@ -26,7 +26,6 @@ import {
   type ApplyResult,
   type EngineInfo,
   type HeadResult,
-  type ProxyGenerateResult,
   type RedoResult,
   type RenderRangesResult,
   type UndoResult,
@@ -63,15 +62,6 @@ export interface UseEngineProject extends State {
 
   apply(op: Op): Promise<ApplyResult | null>;
   applyBatch(ops: Op[], options?: { group_undo?: boolean }): Promise<ApplyBatchOutcome>;
-  /**
-   * Build preview proxy + `source_set_proxy`. Updates mirrored head so
-   * preview re-queries `preview_decode_path` (proxy-first scrub).
-   */
-  proxyGenerate(sourceId: string, maxWidth?: number): Promise<ProxyGenerateResult | null>;
-  /**
-   * Same as [`proxyGenerate`], but failures do **not** set the hook's global engine error (optional ingest step).
-   */
-  proxyGenerateOptional(sourceId: string, maxWidth?: number): Promise<ProxyGenerateResult | null>;
   clearHistory(): Promise<void>;
   undo(): Promise<UndoResult | null>;
   redo(): Promise<RedoResult | null>;
@@ -306,36 +296,6 @@ export function useEngineProject(): UseEngineProject {
     [setError],
   );
 
-  const proxyGenerate = useCallback(
-    async (sourceId: string, maxWidth?: number): Promise<ProxyGenerateResult | null> => {
-      setState((s) => ({ ...s, busy: true, error: null }));
-      try {
-        const r = await getEngineClient().proxyGenerate(sourceId, maxWidth);
-        setHeadFrom(r);
-        return r;
-      } catch (e) {
-        setError((e as EngineError).message);
-        return null;
-      }
-    },
-    [setError, setHeadFrom],
-  );
-
-  const proxyGenerateOptional = useCallback(
-    async (sourceId: string, maxWidth?: number): Promise<ProxyGenerateResult | null> => {
-      setState((s) => ({ ...s, busy: true, error: null }));
-      try {
-        const r = await getEngineClient().proxyGenerate(sourceId, maxWidth);
-        setHeadFrom(r);
-        return r;
-      } catch {
-        setState((s) => ({ ...s, busy: false }));
-        return null;
-      }
-    },
-    [setHeadFrom],
-  );
-
   return {
     ...state,
     canUndo: state.head?.can_undo ?? false,
@@ -346,8 +306,6 @@ export function useEngineProject(): UseEngineProject {
     saveProjectAs,
     apply,
     applyBatch,
-    proxyGenerate,
-    proxyGenerateOptional,
     clearHistory,
     undo,
     redo,

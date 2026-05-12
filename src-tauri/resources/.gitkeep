@@ -1,1 +1,1 @@
-# Placeholder so `resources/*` exists before engine-spike is copied by build.rs.
+# Placeholder so `resources/*` exists for Tauri's bundle config.

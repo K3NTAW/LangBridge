@@ -189,14 +189,14 @@ export function CommandPalette({ onClose, planContext }: Props) {
                     {turn.status === "streaming" ? (
                       <div className="flex items-center gap-1.5 text-[10px] text-zinc-500">
                         <Loader2 className="h-3 w-3 animate-spin" strokeWidth={2} />
-                        cut-ai…
+                        sift-ai…
                       </div>
                     ) : null}
                     {turn.status === "error" && turn.errorDetail ? (
                       <div className="text-[11px] text-amber-200/90">{turn.errorDetail}</div>
                     ) : null}
                     {turn.status === "done" && !turn.errorDetail ? (
-                      <div className="text-[10px] text-zinc-600">cut-ai</div>
+                      <div className="text-[10px] text-zinc-600">sift-ai</div>
                     ) : null}
                   </div>
                 </div>

@@ -2,7 +2,7 @@
 
 export const DEFAULT_WHISPER_MODEL = "base";
 
-export const WHISPER_MODEL_STORAGE_KEY = "cut-app-whisper-model";
+export const WHISPER_MODEL_STORAGE_KEY = "sift-app-whisper-model";
 
 export interface WhisperModelOption {
   readonly id: string;
@@ -30,7 +30,7 @@ export const WHISPER_MODEL_OPTIONS: readonly WhisperModelOption[] = [
 
 const KNOWN_IDS = new Set(WHISPER_MODEL_OPTIONS.map((o) => o.id));
 
-/** Loose validation aligned with cut-ai ``normalize_whisper_model_override``. */
+/** Loose validation aligned with sift-ai ``normalize_whisper_model_override``. */
 export function isLikelyWhisperModelId(id: string): boolean {
   if (id.length <= 0 || id.length > 96 || id.includes("..")) return false;
   return /^[\w.\-/]+$/.test(id);

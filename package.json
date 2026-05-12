@@ -1,7 +1,7 @@
 {
-  "name": "cut-app",
+  "name": "sift-app",
   "version": "0.1.0",
-  "description": "CUT shell — Tauri + React + TS. UI, panels, AI command palette.",
+  "description": "Sift shell — Tauri + React + TS. UI, panels, AI chat.",
   "private": true,
   "type": "module",
   "scripts": {

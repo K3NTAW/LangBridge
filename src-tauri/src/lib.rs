@@ -1,7 +1,7 @@
 //! CUT Tauri host library.
 //!
 //! Runs the Tauri runtime, owns the main window, spawns the
-//! `cut-engine-host` subprocess at boot, and exposes Tauri commands
+//! `sift-engine-host` subprocess at boot, and exposes Tauri commands
 //! ([`engine::engine_info`], [`engine::engine_apply`], …) that the
 //! React UI invokes via `@tauri-apps/api`.
 //!
@@ -10,7 +10,6 @@
 
 mod engine;
 mod preview;
-mod preview_gpu;
 
 use tauri::Manager;
 use tokio::sync::Mutex;
@@ -22,7 +21,6 @@ pub fn run() {
         .plugin(tauri_plugin_fs::init())
         .plugin(tauri_plugin_os::init())
         .setup(|app| {
-            app.manage(preview_gpu::GpuPreviewState::default());
             // Spawn the engine subprocess on the Tauri runtime's
             // tokio executor. We block_on here because the rest of
             // setup (and command handling) needs the engine handle
@@ -33,7 +31,7 @@ pub fn run() {
             match handle {
                 Ok((engine, info)) => {
                     log::info!(
-                        "[cut-app] spawned engine: bin={}, socket={}",
+                        "[sift-app] spawned engine: bin={}, socket={}",
                         info.bin.display(),
                         info.socket.display(),
                     );
@@ -45,9 +43,9 @@ pub fn run() {
                     // errors via the missing managed state, which the
                     // UI shows in the engine status badge.
                     log::error!(
-                        "[cut-app] failed to spawn engine: {e}\n\
+                        "[sift-app] failed to spawn engine: {e}\n\
                          The UI will run but engine commands will fail. \
-                         Try `cargo build --bin cut-engine-host` in cut-engine, \
+                         Try `cargo build --bin sift-engine-host` in sift-engine, \
                          or set CUT_ENGINE_BIN to an explicit path."
                     );
                 }
@@ -67,16 +65,11 @@ pub fn run() {
             engine::engine_render_ranges,
             engine::engine_timeline_layout,
             engine::engine_preview_primary_media,
-            engine::engine_proxy_generate,
-            engine::preview_timeline_frame_png,
             engine::engine_clear_history,
             engine::engine_save,
             engine::engine_load,
             preview::preview_frame_png,
             preview::preview_probe,
-            preview_gpu::preview_gpu_window_open,
-            preview_gpu::preview_gpu_seek,
-            preview_gpu::preview_gpu_close,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

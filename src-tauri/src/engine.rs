@@ -1,4 +1,4 @@
-//! Bridge from the Tauri host to the spawned `cut-engine-host`
+//! Bridge from the Tauri host to the spawned `sift-engine-host`
 //! subprocess.
 //!
 //! At app boot, [`Engine::spawn`] launches the binary, waits for its
@@ -11,7 +11,7 @@
 //! ## Why a long-lived UDS connection
 //!
 //! The engine is single-threaded and processes one request at a time
-//! (see `cut-engine`'s `host` module). Tauri's UI rarely fires more
+//! (see `sift-engine`'s `host` module). Tauri's UI rarely fires more
 //! than one engine call concurrently — and when it does, queueing
 //! behind a mutex is the correct semantic. A connection-per-call model
 //! would re-incur the bind/connect cost and pay nothing for it.
@@ -28,7 +28,6 @@ use std::process::Stdio;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
-use base64::{engine::general_purpose::STANDARD, Engine as _};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use thiserror::Error;
@@ -94,12 +93,12 @@ pub struct SpawnedEngine {
 }
 
 impl Engine {
-    /// Spawn `cut-engine-host`, wait for `READY`, connect, and return
+    /// Spawn `sift-engine-host`, wait for `READY`, connect, and return
     /// the live handle.
     pub async fn spawn() -> Result<(Self, SpawnedEngine), EngineError> {
         let bin = resolve_engine_binary()
             .ok_or_else(|| EngineError::Subprocess(
-                "cut-engine-host binary not found — try `cargo build` in cut-engine, \
+                "sift-engine-host binary not found — try `cargo build` in sift-engine, \
                  or set CUT_ENGINE_BIN".to_string(),
             ))?;
 
@@ -233,7 +232,7 @@ impl Engine {
                 .map(|d| d.as_nanos())
                 .unwrap_or_default()
         );
-        p.push(format!("cut-engine-{nonce}.sock"));
+        p.push(format!("sift-engine-{nonce}.sock"));
         p
     }
 }
@@ -246,11 +245,11 @@ impl Drop for Engine {
     }
 }
 
-/// Resolve the path to the `cut-engine-host` binary.
+/// Resolve the path to the `sift-engine-host` binary.
 ///
 /// Order of precedence:
 /// 1. `CUT_ENGINE_BIN` environment variable (escape hatch for ops).
-/// 2. Sibling workspace `cut-engine/target/{release,debug}/cut-engine-host`,
+/// 2. Sibling workspace `sift-engine/target/{release,debug}/sift-engine-host`,
 ///    anchored either to the current working directory (when launched
 ///    from a script that cd'd into the workspace) or to the Tauri
 ///    executable's own location (so `npm run tauri dev` works
@@ -268,8 +267,8 @@ pub fn resolve_engine_binary() -> Option<PathBuf> {
     }
 
     let suffixes = [
-        "cut-engine/target/release/cut-engine-host",
-        "cut-engine/target/debug/cut-engine-host",
+        "sift-engine/target/release/sift-engine-host",
+        "sift-engine/target/debug/sift-engine-host",
     ];
     let bin_name = if cfg!(windows) { ".exe" } else { "" };
 
@@ -316,7 +315,7 @@ pub struct EngineHandle(pub Mutex<Engine>);
 /// publicly because Tauri's command-generation macro requires it.
 #[derive(Serialize)]
 pub struct EngineInfo {
-    /// `cut-engine` crate version.
+    /// `sift-engine` crate version.
     pub engine_version: String,
     /// Spec version this engine implements.
     pub spec_version: String,
@@ -329,8 +328,8 @@ pub struct EngineInfo {
 #[tauri::command]
 pub fn engine_info_static() -> EngineInfo {
     EngineInfo {
-        engine_version: cut_engine::ENGINE_VERSION.to_string(),
-        spec_version: cut_engine::SPEC_VERSION.to_string(),
+        engine_version: sift_engine::ENGINE_VERSION.to_string(),
+        spec_version: sift_engine::SPEC_VERSION.to_string(),
     }
 }
 
@@ -422,58 +421,11 @@ pub async fn engine_preview_primary_media(state: tauri::State<'_, EngineHandle>)
         .map_err(Into::into)
 }
 
-#[tauri::command]
-pub async fn engine_proxy_generate(
-    state: tauri::State<'_, EngineHandle>,
-    source_id: String,
-    max_width: Option<u32>,
-) -> Result<Value, String> {
-    let mut g = state.0.lock().await;
-    let params = match max_width {
-        Some(w) => json!({ "source_id": source_id, "max_width": w }),
-        None => json!({ "source_id": source_id }),
-    };
-    g.call("proxy_generate", params).await.map_err(Into::into)
-}
-
-/// Timeline-aware preview: asks `cut-engine-host` (built with `--features preview_compositor`)
-/// to composite the primary video clip at `timeline_tick`, then scales + PNG-encodes for the WebView.
-#[tauri::command]
-pub async fn preview_timeline_frame_png(
-    state: tauri::State<'_, EngineHandle>,
-    timeline_tick: String,
-    max_edge: Option<u32>,
-) -> Result<crate::preview::PreviewPngPayload, String> {
-    let max_edge = max_edge.unwrap_or(1280).clamp(64, 8192);
-    let mut g = state.0.lock().await;
-    let v = g
-        .call(
-            "preview_composite_frame",
-            json!({ "timeline_tick": timeline_tick }),
-        )
-        .await
-        .map_err(|e: EngineError| e.to_string())?;
-
-    let gap = v.get("gap").and_then(|x| x.as_bool()).unwrap_or(false);
-    if gap {
-        return Err("no frame at playhead (gap or no clip)".to_string());
-    }
-    let width = v["width"].as_u64().ok_or_else(|| "engine: missing width".to_string())? as u32;
-    let height = v["height"].as_u64().ok_or_else(|| "engine: missing height".to_string())? as u32;
-    let b64 = v["rgba_base64"]
-        .as_str()
-        .ok_or_else(|| "engine: missing rgba_base64".to_string())?;
-    let rgba = STANDARD.decode(b64).map_err(|e| format!("base64 decode: {e}"))?;
-    let (pix, w, h) = crate::preview::rgba_scaled_for_preview(&rgba, width, height, max_edge)
-        .map_err(|e| e.to_string())?;
-    let png = crate::preview::rgba_to_png_bytes(w, h, &pix).map_err(|e| e.to_string())?;
-    Ok(crate::preview::PreviewPngPayload {
-        width: w,
-        height: h,
-        duration_seconds: None,
-        png_base64: STANDARD.encode(&png),
-    })
-}
+// engine_proxy_generate and preview_timeline_frame_png removed in the
+// Sift pivot. Single-file preview is `preview::preview_frame_png` (kept
+// during Milestone A as a thumbnail/poster helper) and the new
+// segment-cache renderer (lib/previewRender.ts) is what feeds the
+// <video> element.
 
 #[tauri::command]
 pub async fn engine_clear_history(

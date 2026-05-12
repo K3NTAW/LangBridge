@@ -1,0 +1,37 @@
+// vite.config.ts
+import { defineConfig } from "file:///sessions/clever-inspiring-hawking/mnt/video-editing-ai/cut-app/node_modules/vite/dist/node/index.js";
+import react from "file:///sessions/clever-inspiring-hawking/mnt/video-editing-ai/cut-app/node_modules/@vitejs/plugin-react/dist/index.js";
+import path from "node:path";
+var __vite_injected_original_dirname = "/sessions/clever-inspiring-hawking/mnt/video-editing-ai/cut-app";
+var host = process.env["TAURI_DEV_HOST"];
+var serverConfig = {
+  port: 1420,
+  strictPort: true,
+  host: host ?? false,
+  watch: {
+    ignored: ["**/src-tauri/**"]
+  }
+};
+if (host) {
+  serverConfig.hmr = {
+    protocol: "ws",
+    host,
+    port: 1421
+  };
+}
+var vite_config_default = defineConfig({
+  plugins: [react()],
+  resolve: {
+    alias: {
+      "@": path.resolve(__vite_injected_original_dirname, "./src")
+    }
+  },
+  // Tauri expects the dev server on a fixed port; Vite would choose a
+  // different port if 1420 were taken, which breaks the Tauri window.
+  clearScreen: false,
+  server: serverConfig
+});
+export {
+  vite_config_default as default
+};
+//# sourceMappingURL=data:application/json;base64,ewogICJ2ZXJzaW9uIjogMywKICAic291cmNlcyI6IFsidml0ZS5jb25maWcudHMiXSwKICAic291cmNlc0NvbnRlbnQiOiBbImNvbnN0IF9fdml0ZV9pbmplY3RlZF9vcmlnaW5hbF9kaXJuYW1lID0gXCIvc2Vzc2lvbnMvY2xldmVyLWluc3BpcmluZy1oYXdraW5nL21udC92aWRlby1lZGl0aW5nLWFpL2N1dC1hcHBcIjtjb25zdCBfX3ZpdGVfaW5qZWN0ZWRfb3JpZ2luYWxfZmlsZW5hbWUgPSBcIi9zZXNzaW9ucy9jbGV2ZXItaW5zcGlyaW5nLWhhd2tpbmcvbW50L3ZpZGVvLWVkaXRpbmctYWkvY3V0LWFwcC92aXRlLmNvbmZpZy50c1wiO2NvbnN0IF9fdml0ZV9pbmplY3RlZF9vcmlnaW5hbF9pbXBvcnRfbWV0YV91cmwgPSBcImZpbGU6Ly8vc2Vzc2lvbnMvY2xldmVyLWluc3BpcmluZy1oYXdraW5nL21udC92aWRlby1lZGl0aW5nLWFpL2N1dC1hcHAvdml0ZS5jb25maWcudHNcIjtpbXBvcnQgeyBkZWZpbmVDb25maWcsIHR5cGUgVXNlckNvbmZpZyB9IGZyb20gXCJ2aXRlXCI7XG5pbXBvcnQgcmVhY3QgZnJvbSBcIkB2aXRlanMvcGx1Z2luLXJlYWN0XCI7XG5pbXBvcnQgcGF0aCBmcm9tIFwibm9kZTpwYXRoXCI7XG5cbmNvbnN0IGhvc3QgPSBwcm9jZXNzLmVudltcIlRBVVJJX0RFVl9IT1NUXCJdO1xuXG5jb25zdCBzZXJ2ZXJDb25maWc6IFVzZXJDb25maWdbXCJzZXJ2ZXJcIl0gPSB7XG4gIHBvcnQ6IDE0MjAsXG4gIHN0cmljdFBvcnQ6IHRydWUsXG4gIGhvc3Q6IGhvc3QgPz8gZmFsc2UsXG4gIHdhdGNoOiB7XG4gICAgaWdub3JlZDogW1wiKiovc3JjLXRhdXJpLyoqXCJdLFxuICB9LFxufTtcblxuaWYgKGhvc3QpIHtcbiAgc2VydmVyQ29uZmlnLmhtciA9IHtcbiAgICBwcm90b2NvbDogXCJ3c1wiLFxuICAgIGhvc3QsXG4gICAgcG9ydDogMTQyMSxcbiAgfTtcbn1cblxuLy8gaHR0cHM6Ly92aXRlanMuZGV2L2NvbmZpZy9cbmV4cG9ydCBkZWZhdWx0IGRlZmluZUNvbmZpZyh7XG4gIHBsdWdpbnM6IFtyZWFjdCgpXSxcblxuICByZXNvbHZlOiB7XG4gICAgYWxpYXM6IHtcbiAgICAgIFwiQFwiOiBwYXRoLnJlc29sdmUoaW1wb3J0Lm1ldGEuZGlybmFtZSwgXCIuL3NyY1wiKSxcbiAgICB9LFxuICB9LFxuXG4gIC8vIFRhdXJpIGV4cGVjdHMgdGhlIGRldiBzZXJ2ZXIgb24gYSBmaXhlZCBwb3J0OyBWaXRlIHdvdWxkIGNob29zZSBhXG4gIC8vIGRpZmZlcmVudCBwb3J0IGlmIDE0MjAgd2VyZSB0YWtlbiwgd2hpY2ggYnJlYWtzIHRoZSBUYXVyaSB3aW5kb3cuXG4gIGNsZWFyU2NyZWVuOiBmYWxzZSxcbiAgc2VydmVyOiBzZXJ2ZXJDb25maWcsXG59KTtcbiJdLAogICJtYXBwaW5ncyI6ICI7QUFBK1csU0FBUyxvQkFBcUM7QUFDN1osT0FBTyxXQUFXO0FBQ2xCLE9BQU8sVUFBVTtBQUZqQixJQUFNLG1DQUFtQztBQUl6QyxJQUFNLE9BQU8sUUFBUSxJQUFJLGdCQUFnQjtBQUV6QyxJQUFNLGVBQXFDO0FBQUEsRUFDekMsTUFBTTtBQUFBLEVBQ04sWUFBWTtBQUFBLEVBQ1osTUFBTSxRQUFRO0FBQUEsRUFDZCxPQUFPO0FBQUEsSUFDTCxTQUFTLENBQUMsaUJBQWlCO0FBQUEsRUFDN0I7QUFDRjtBQUVBLElBQUksTUFBTTtBQUNSLGVBQWEsTUFBTTtBQUFBLElBQ2pCLFVBQVU7QUFBQSxJQUNWO0FBQUEsSUFDQSxNQUFNO0FBQUEsRUFDUjtBQUNGO0FBR0EsSUFBTyxzQkFBUSxhQUFhO0FBQUEsRUFDMUIsU0FBUyxDQUFDLE1BQU0sQ0FBQztBQUFBLEVBRWpCLFNBQVM7QUFBQSxJQUNQLE9BQU87QUFBQSxNQUNMLEtBQUssS0FBSyxRQUFRLGtDQUFxQixPQUFPO0FBQUEsSUFDaEQ7QUFBQSxFQUNGO0FBQUE7QUFBQTtBQUFBLEVBSUEsYUFBYTtBQUFBLEVBQ2IsUUFBUTtBQUNWLENBQUM7IiwKICAibmFtZXMiOiBbXQp9Cg==

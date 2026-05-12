@@ -1,10 +1,23 @@
+import { invoke } from "@tauri-apps/api/core";
+
 import { EngineError, getEngineClient, type ApplyBatchOutcome } from "./engineClient";
 import { modKeySymbol } from "./modKey";
 import type { Op } from "./ops";
 import { asId, type ClipId, type SourceId, type TrackId } from "./ops";
-import { previewProbe, type PreviewProbePayload } from "./previewProbe";
 import { secondsToTicksApprox, TICKS_PER_SECOND } from "./time";
 import { ulidLite } from "./ulid";
+
+/** Container probe payload returned by the `preview_probe` Tauri command. */
+interface PreviewProbePayload {
+  duration_seconds: number | null;
+  width: number | null;
+  height: number | null;
+}
+
+/** Thin local wrapper around the `preview_probe` Tauri command. */
+async function previewProbe(path: string): Promise<PreviewProbePayload> {
+  return await invoke<PreviewProbePayload>("preview_probe", { path });
+}
 
 function isNoVideoTrackRenderError(err: unknown): boolean {
   if (!(err instanceof EngineError)) return false;

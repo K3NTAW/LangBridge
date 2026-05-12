@@ -45,15 +45,23 @@ export function MediaPoolPane({
     if (!project.head) return;
     setLocalError(null);
     setProxyFallbackNotice(false);
-    const picked = await openDialog({
-      multiple: false,
-      directory: false,
-      title: "Import media",
-      filters: [
-        { name: "Video", extensions: ["mp4", "mov", "m4v", "mkv", "webm", "avi"] },
-        { name: "Any", extensions: ["*"] },
-      ],
-    });
+    let picked: string | string[] | null;
+    try {
+      picked = await openDialog({
+        multiple: false,
+        directory: false,
+        title: "Import media",
+        filters: [
+          { name: "Video", extensions: ["mp4", "mov", "m4v", "mkv", "webm", "avi"] },
+          { name: "Any", extensions: ["*"] },
+        ],
+      });
+    } catch (e) {
+      // Surface dialog plugin / capability failures so they're not silent.
+      const msg = e instanceof Error ? e.message : String(e);
+      setLocalError(`Could not open file picker: ${msg}`);
+      return;
+    }
     if (typeof picked !== "string") return;
     setImportFileLabel(mediaBasename(picked));
     setBusy(true);
@@ -61,10 +69,6 @@ export function MediaPoolPane({
     try {
       const r = await importMediaFullClip(picked, (ops) => project.applyBatch(ops), {
         onAfterBatch: () => setImportPhase("proxy"),
-        proxyGenerate: async (sourceId) => {
-          const out = await project.proxyGenerateOptional(sourceId as unknown as string);
-          return out !== null;
-        },
       });
       if (!r.ok) {
         setLocalError(r.message);

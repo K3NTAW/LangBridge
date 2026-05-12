@@ -4,7 +4,7 @@
  * Flow:
  *   1. Pick a video (Tauri file dialog), **or** bootstrap from Media Pool **Transcribe…**
  *      (same Whisper + ingest pipeline).
- *   2. cut-ai runs Whisper, returns word-level timestamps.
+ *   2. sift-ai runs Whisper, returns word-level timestamps.
  *   3. Each word is ingested into the engine as a one-clip span on a
  *      single video track (timeline slots packed head-to-tail so Whisper’s
  *      overlapping timings don’t trip clip-overlap validation). Source +
@@ -16,7 +16,7 @@
  *      restores every auto-deleted word.
  *   5. Click a word → engine `apply(ClipDelete)`. Undo/redo work via
  *      the engine ops log (Cmd-Z / Cmd-Shift-Z).
- *   6. Export → `engine.renderRanges()` → cut-ai recut from those
+ *   6. Export → `engine.renderRanges()` → sift-ai recut from those
  *      ranges. The engine is the source of truth for what's in the
  *      cut.
  *
@@ -1039,7 +1039,7 @@ export function TranscriptEditorPane({
                       onChange={(e) => setDiarizationMode(e.target.value as DiarizationRequestMode)}
                       disabled={isBusy}
                       className="max-w-[8rem] rounded border border-zinc-700 bg-zinc-900 py-0.5 pl-1 pr-6 text-[11px] text-zinc-200"
-                      title="Pyannote needs pip install '.[diarize]' and CUT_AI_HF_TOKEN on cut-ai"
+                      title="Pyannote needs pip install '.[diarize]' and SIFT_AI_HF_TOKEN on sift-ai"
                     >
                       <option value="auto">Auto (server default)</option>
                       <option value="heuristic">Gap heuristic</option>
@@ -1298,14 +1298,14 @@ function TranscriptBody({
           </div>
           <div className="text-xs text-zinc-400">{status.message}</div>
           <div className="text-xs text-zinc-600">
-            Start cut-ai from the <span className="font-mono text-zinc-500">cut-ai/</span> directory so it listens on{" "}
+            Start sift-ai from the <span className="font-mono text-zinc-500">sift-ai/</span> directory so it listens on{" "}
             <span className="font-mono text-zinc-500">127.0.0.1:8765</span>:
           </div>
           <div className="flex flex-col gap-2 font-mono text-[11px] text-zinc-300">
-            <code className="rounded bg-zinc-900 px-2 py-1 text-left">python -m cut_ai</code>
+            <code className="rounded bg-zinc-900 px-2 py-1 text-left">python -m sift_ai</code>
             <span className="text-zinc-600">or</span>
             <code className="rounded bg-zinc-900 px-2 py-1 text-left">
-              .venv/bin/uvicorn cut_ai.server:app --reload --host 127.0.0.1 --port 8765
+              .venv/bin/uvicorn sift_ai.server:app --reload --host 127.0.0.1 --port 8765
             </code>
           </div>
           <button

@@ -1,6 +1,6 @@
 //! FFmpeg CPU decode → RGBA → PNG for the webview preview (milestone D).
 //!
-//! Requires system FFmpeg visible to `pkg-config` (same as `engine-spike`).
+//! Requires system FFmpeg visible to `pkg-config`.
 //! macOS: `brew install ffmpeg pkg-config`.
 
 use std::path::Path;

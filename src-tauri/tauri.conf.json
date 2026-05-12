@@ -1,8 +1,8 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "CUT",
+  "productName": "Sift",
   "version": "0.1.0",
-  "identifier": "dev.cut.app",
+  "identifier": "dev.sift.app",
   "build": {
     "beforeDevCommand": "npm run dev",
     "devUrl": "http://localhost:1420",
@@ -13,7 +13,7 @@
     "windows": [
       {
         "label": "main",
-        "title": "CUT",
+        "title": "Sift",
         "width": 1440,
         "height": 900,
         "minWidth": 960,

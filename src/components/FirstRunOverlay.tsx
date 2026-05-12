@@ -31,7 +31,7 @@ export function FirstRunOverlay({ onDismiss }: Props) {
         <div className="mb-4 flex items-center gap-2 text-violet-300">
           <Sparkles className="h-5 w-5" strokeWidth={2} />
           <h2 id="cut-onboarding-title" className="text-lg font-semibold text-zinc-100">
-            Welcome to CUT
+            Welcome to Sift
           </h2>
         </div>
         <ol className="list-decimal space-y-3 pl-5 text-sm leading-relaxed text-zinc-300">
@@ -45,7 +45,7 @@ export function FirstRunOverlay({ onDismiss }: Props) {
           </li>
           <li>
             Click words to remove them; <strong className="font-medium text-zinc-200">Export</strong> writes H.264 via
-            cut-ai. Optional <strong className="font-medium text-zinc-200">Captions</strong> (.srt / .vtt) stays synced
+            sift-ai. Optional <strong className="font-medium text-zinc-200">Captions</strong> (.srt / .vtt) stays synced
             to the cut.
           </li>
           <li>
