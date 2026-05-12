@@ -3,6 +3,8 @@ dist/
 dist-ssr/
 *.local
 .vite/
+vite.config.ts.timestamp-*.mjs
+vite.config.js.timestamp-*.mjs
 
 # Tauri
 src-tauri/target/

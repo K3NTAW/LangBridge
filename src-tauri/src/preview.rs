@@ -148,31 +148,6 @@ pub(crate) fn rgba_to_png_bytes(width: u32, height: u32, rgba: &[u8]) -> Result<
     Ok(out)
 }
 
-/// Scale packed RGBA8 so longest edge ≤ `max_edge` (same rule as [`decode_preview_png`]).
-pub(crate) fn rgba_scaled_for_preview(
-    rgba: &[u8],
-    width: u32,
-    height: u32,
-    max_edge: u32,
-) -> Result<(Vec<u8>, u32, u32), PreviewError> {
-    let expected = (width as usize)
-        .checked_mul(height as usize)
-        .and_then(|n| n.checked_mul(4))
-        .ok_or(PreviewError::NoFrame)?;
-    if rgba.len() != expected {
-        return Err(PreviewError::NoFrame);
-    }
-    let (dw, dh) = decode_dimensions_wh(width, height, max_edge);
-    if dw == width && dh == height {
-        return Ok((rgba.to_vec(), width, height));
-    }
-    let img =
-        image::RgbaImage::from_raw(width, height, rgba.to_vec()).ok_or(PreviewError::NoFrame)?;
-    let resized =
-        image::imageops::resize(&img, dw, dh, image::imageops::FilterType::Triangle);
-    Ok((resized.into_raw(), dw, dh))
-}
-
 fn pack_decoded_frame(
     decoded: &frame::Video,
     max_edge: u32,
