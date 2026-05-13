@@ -81,16 +81,30 @@ export type Residency = "local" | "hybrid" | "cloud";
 
 export type PlanChunkKind = "op" | "rationale" | "question" | "done" | "error";
 
-/** Mirrors ``sift_ai.models.PlanContext`` — JSON body for ``POST /v1/plan``. */
-export interface PlanContextPayload {
-  project_id: string;
-  sequence_id: string;
-  selection?: string[];
-  playhead_ticks?: number;
-  scoped_window?: [number, number] | null;
-  retrieved_segments?: unknown[];
-  session_memory?: string[];
-  data_residency: Residency;
+/** One prior chat turn sent with the plan request. */
+export interface PlanChatTurnPayload {
+  role: "user" | "assistant";
+  content: string;
+}
+
+/** One kept range in the engine's render plan (source-time ticks). */
+export interface PlanKeptRangePayload {
+  start_ticks: number;
+  end_ticks: number;
+}
+
+/**
+ * Body for ``POST /v1/plan`` — chat-first M-B shape.
+ *
+ * `command` is the user's latest prompt. `transcript` + `render_plan`
+ * give Claude the current state of the cut. `chat_history` carries
+ * prior turns so follow-ups ("actually keep that") work.
+ */
+export interface PlanRequestPayload {
+  command: string;
+  transcript: Transcript;
+  render_plan?: PlanKeptRangePayload[];
+  chat_history?: PlanChatTurnPayload[];
 }
 
 /** One SSE JSON payload from ``POST /v1/plan`` (see ``PlanChunk`` in sift-ai). */
@@ -215,10 +229,13 @@ export interface AIClient {
   /**
    * Stream edit-plan chunks from ``POST /v1/plan`` (SSE). Yields parsed
    * [`PlanChunkPayload`] objects until the stream ends or the signal aborts.
+   *
+   * The chat-first request shape carries the transcript + current cut
+   * + prior chat turns; Claude's tool calls become ``op`` chunks the
+   * caller materialises into engine ops via its ingest mapping.
    */
   plan(
-    command: string,
-    ctx: PlanContextPayload,
+    req: PlanRequestPayload,
     signal?: AbortSignal,
   ): AsyncGenerator<PlanChunkPayload, void, undefined>;
 }
@@ -346,17 +363,22 @@ class HttpAIClient implements AIClient {
   }
 
   async *plan(
-    command: string,
-    ctx: PlanContextPayload,
+    req: PlanRequestPayload,
     signal?: AbortSignal,
   ): AsyncGenerator<PlanChunkPayload, void, undefined> {
+    const reqBody: PlanRequestPayload = {
+      command: req.command,
+      transcript: req.transcript,
+      render_plan: req.render_plan ?? [],
+      chat_history: req.chat_history ?? [],
+    };
     const init: RequestInit = {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
         Accept: "text/event-stream",
       },
-      body: JSON.stringify({ command, ctx }),
+      body: JSON.stringify(reqBody),
     };
     if (signal !== undefined) init.signal = signal;
 

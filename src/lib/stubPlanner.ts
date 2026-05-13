@@ -13,11 +13,58 @@
 import type { Op } from "./ops";
 import {
   buildFillerDeleteOps,
+  buildRangeDeleteOps,
   type TranscriptHandle,
   type TranscriptState,
 } from "./transcriptOps";
 
-export type StubIntent = "cut_fillers" | "cut_silences" | "unknown";
+export type StubIntent = "cut_fillers" | "cut_silences" | "cut_range" | "unknown";
+
+/**
+ * Parse a single timestamp like `2:23` (mm:ss) or `1:02:30` (h:mm:ss)
+ * into seconds. Returns null on malformed input.
+ */
+export function parseTimestamp(s: string): number | null {
+  const parts = s.split(":").map((p) => Number.parseInt(p, 10));
+  if (parts.some((n) => !Number.isFinite(n) || n < 0)) return null;
+  if (parts.length === 2) {
+    const [m, sec] = parts as [number, number];
+    if (sec >= 60) return null;
+    return m * 60 + sec;
+  }
+  if (parts.length === 3) {
+    const [h, m, sec] = parts as [number, number, number];
+    if (m >= 60 || sec >= 60) return null;
+    return h * 3600 + m * 60 + sec;
+  }
+  return null;
+}
+
+// Matches "<start> [to|-|–|—|→|and] <end>" with mm:ss or h:mm:ss
+// timestamps. The optional "from"/"between" prefix is consumed by the
+// surrounding intent regex; this expression only cares about the two
+// timestamps and the joiner.
+const TIME_RANGE_RE =
+  /(\d{1,2}(?::\d{2}){1,2})\s*(?:to|through|thru|until|–|—|->|→|-|and)\s*(\d{1,2}(?::\d{2}){1,2})/i;
+
+/**
+ * Extract a time range from a free-form prompt. Returns null when no
+ * pair of timestamps is present (or when the second is not strictly
+ * after the first).
+ */
+export function parseTimeRange(
+  input: string,
+): { startSecs: number; endSecs: number } | null {
+  const m = TIME_RANGE_RE.exec(input);
+  if (!m) return null;
+  const a = parseTimestamp(m[1]!);
+  const b = parseTimestamp(m[2]!);
+  if (a === null || b === null) return null;
+  if (b <= a) return null;
+  return { startSecs: a, endSecs: b };
+}
+
+const CUT_VERB_RE = /\b(cut|drop|remove|delete|strip|trim|kill)\b/i;
 
 export interface PlannerProposal {
   intent: StubIntent;
@@ -57,6 +104,14 @@ export function classifyIntent(input: string): StubIntent {
     || /\b(silence\s+strip|strip\s+silence)\b/.test(t)
   ) {
     return "cut_silences";
+  }
+
+  // Time range: "cut 2:23 to 3:45", "drop from 1:10 to 1:30",
+  // "remove between 0:45 and 1:00", "trim 1:00 → 1:10".
+  // Requires both a cut-verb and a parseable timestamp pair so we
+  // don't false-positive on prompts that merely mention a time.
+  if (CUT_VERB_RE.test(input) && parseTimeRange(input) !== null) {
+    return "cut_range";
   }
 
   return "unknown";
@@ -126,6 +181,43 @@ export function planFromUserPrompt(
     };
   }
 
+  if (intent === "cut_range") {
+    const range = parseTimeRange(prompt);
+    if (range === null) {
+      return {
+        intent,
+        body:
+          "I caught a cut verb but couldn't parse a clean time range. "
+          + 'Try something like "drop 2:23 to 3:45" or "cut from 1:00 to 1:30".',
+        ops: [],
+        actionable: false,
+        deletedWordIndices: [],
+      };
+    }
+    const { ops, wordIndices } = buildRangeDeleteOps(transcript, range.startSecs, range.endSecs);
+    if (ops.length === 0) {
+      return {
+        intent,
+        body:
+          `${formatRange(range)} — that span has no transcript words I can remove. `
+          + "Either the range is between words, the words there are already deleted, "
+          + "or the source has no speech at that point.",
+        ops: [],
+        actionable: false,
+        deletedWordIndices: [],
+      };
+    }
+    return {
+      intent,
+      body:
+        `${formatRange(range)} — removing ${plural(wordIndices.length, "word")} in that span. `
+        + "Approve to apply.",
+      ops,
+      actionable: true,
+      deletedWordIndices: wordIndices,
+    };
+  }
+
   // cut_silences — silence detection requires a separate sift-ai call.
   // We acknowledge the intent but defer the actual work to the next slice.
   return {
@@ -138,6 +230,24 @@ export function planFromUserPrompt(
     actionable: false,
     deletedWordIndices: [],
   };
+}
+
+/** Pretty-print a (startSecs, endSecs) pair as "2:23 → 3:45". */
+function formatRange(range: { startSecs: number; endSecs: number }): string {
+  return `${formatSecs(range.startSecs)} → ${formatSecs(range.endSecs)}`;
+}
+
+function formatSecs(s: number): string {
+  const total = Math.floor(s);
+  const sec = total % 60;
+  const min = Math.floor(total / 60) % 60;
+  const hr = Math.floor(total / 3600);
+  const ss = sec.toString().padStart(2, "0");
+  if (hr > 0) {
+    const mm = min.toString().padStart(2, "0");
+    return `${hr}:${mm}:${ss}`;
+  }
+  return `${min}:${ss}`;
 }
 
 /**

@@ -24,6 +24,7 @@ import {
   ChevronLeft,
   ChevronRight,
   Download,
+  FileCode2,
   Loader2,
   Play,
   Undo2,
@@ -36,6 +37,7 @@ import { CenterTabs, type CenterTab } from "./components/CenterTabs";
 import { ChatPanel, type ChatMessage } from "./components/ChatPanel";
 import { TopBar } from "./components/TopBar";
 import { TranscriptEditorPane } from "./components/TranscriptEditorPane";
+import { CutListPane } from "./components/CutListPane";
 import { FirstRunOverlay } from "./components/FirstRunOverlay";
 import { dismissOnboardingPersist, readOnboardingDismissed } from "./lib/onboardingStorage";
 import { useEngineProject } from "./lib/useEngineProject";
@@ -43,9 +45,21 @@ import { loadStoredWhisperModel, saveStoredWhisperModel } from "./lib/whisperMod
 import { ulidLite } from "./lib/ulid";
 import type { FolderProject } from "./lib/folderProject";
 import { ensureProjectsDir, getVideoProjectPath } from "./lib/perVideoProject";
-import { planFromHandle } from "./lib/stubPlanner";
-import type { TranscriptHandle } from "./lib/transcriptOps";
+import {
+  buildRangeDeleteOps,
+  buildWordIndexDeleteOps,
+  type TranscriptHandle,
+  type TranscriptState,
+} from "./lib/transcriptOps";
 import type { Op } from "./lib/ops";
+import {
+  AIServiceError,
+  getAIClient,
+  type PlanChatTurnPayload,
+  type PlanKeptRangePayload,
+} from "./lib/aiClient";
+import type { RenderRangesResult } from "./lib/engineClient";
+import type { Transcript } from "./lib/aiClient";
 import { computeSnippetRangesAfterDeletes } from "./lib/previewSnippet";
 import {
   buildPreviewRangesFromEngine,
@@ -53,6 +67,7 @@ import {
   renderPreviewToFile,
   type PreviewRenderRange,
 } from "./lib/previewRender";
+import { buildFcpxml, rangesFromRenderResult } from "./lib/fcpxml";
 import { useTranscriptionQueue } from "./lib/transcriptionQueue";
 import { useSiftAiHealth } from "./lib/siftAiHealth";
 
@@ -117,6 +132,160 @@ function readLayout(): LayoutState {
 function clampWidth(n: number, min: number, max: number): number {
   if (!Number.isFinite(n)) return min;
   return Math.max(min, Math.min(max, Math.round(n)));
+}
+
+/**
+ * Result of mapping one of Claude's tool calls onto a concrete engine
+ * proposal that the existing approve flow can apply.
+ *
+ * `ops` — straight clip_delete batch (delete_words / delete_range).
+ * `undo` — translates to `project.undo()` on Approve.
+ * `non_actionable` — Claude responded with text only or with a tool
+ * call that resolved to zero matching words / a bad range.
+ */
+type ResolvedProposal =
+  | {
+      kind: "ops";
+      body: string;
+      ops: Op[];
+      deletedWordIndices: number[];
+      caption: string;
+    }
+  | { kind: "undo"; body: string; caption: string }
+  | { kind: "non_actionable"; body: string };
+
+/** Map an `op` chunk's payload to a `ResolvedProposal`. Pure function. */
+function resolveClaudeAction(
+  payload: Record<string, unknown>,
+  transcriptState: TranscriptState,
+  rationale: string,
+): ResolvedProposal {
+  const action = payload.action;
+  const reason =
+    typeof payload.reason === "string" && payload.reason.trim().length > 0
+      ? payload.reason
+      : rationale;
+  const body = reason.trim().length > 0 ? reason : `Action: ${String(action)}`;
+
+  if (action === "undo") {
+    return {
+      kind: "undo",
+      body,
+      caption: "Proposed: undo last edit",
+    };
+  }
+  if (action === "delete_words") {
+    const indices = Array.isArray(payload.word_indices)
+      ? (payload.word_indices as unknown[]).filter(
+          (n): n is number => typeof n === "number" && Number.isInteger(n) && n >= 0,
+        )
+      : [];
+    const { ops, wordIndices } = buildWordIndexDeleteOps(transcriptState, indices);
+    if (ops.length === 0) {
+      return {
+        kind: "non_actionable",
+        body: `${body}\n\n(No matching words to remove — they may already be deleted.)`,
+      };
+    }
+    return {
+      kind: "ops",
+      body,
+      ops,
+      deletedWordIndices: wordIndices,
+      caption: `Proposed edit · ${ops.length} word${ops.length === 1 ? "" : "s"} to remove`,
+    };
+  }
+  if (action === "delete_range") {
+    const start = Number(payload.start_secs);
+    const end = Number(payload.end_secs);
+    if (!Number.isFinite(start) || !Number.isFinite(end) || end <= start) {
+      return {
+        kind: "non_actionable",
+        body: `${body}\n\n(Claude returned an invalid time range.)`,
+      };
+    }
+    const { ops, wordIndices } = buildRangeDeleteOps(transcriptState, start, end);
+    if (ops.length === 0) {
+      return {
+        kind: "non_actionable",
+        body: `${body}\n\n(No words sit fully inside that range.)`,
+      };
+    }
+    return {
+      kind: "ops",
+      body,
+      ops,
+      deletedWordIndices: wordIndices,
+      caption: `Proposed edit · ${ops.length} word${ops.length === 1 ? "" : "s"} in range`,
+    };
+  }
+
+  return {
+    kind: "non_actionable",
+    body: body || `Unknown action from Claude: ${String(action)}`,
+  };
+}
+
+/**
+ * Probe a video file for duration + intrinsic dimensions by loading
+ * its metadata into a temporary `<video>` element. Used by the
+ * FCPXML exporter so the emitted asset length matches the source.
+ * Frame rate isn't exposed by the DOM video API; the caller picks a
+ * default and the user can adjust in their NLE if needed.
+ */
+async function probeVideoMeta(absPath: string): Promise<{
+  durationSecs: number;
+  width: number;
+  height: number;
+  frameRate: number;
+}> {
+  const { convertFileSrc } = await import("@tauri-apps/api/core");
+  return new Promise((resolve, reject) => {
+    const v = document.createElement("video");
+    v.preload = "metadata";
+    v.muted = true;
+    v.style.position = "absolute";
+    v.style.visibility = "hidden";
+    v.style.pointerEvents = "none";
+    v.src = convertFileSrc(absPath);
+    const cleanup = () => {
+      v.removeEventListener("loadedmetadata", onLoad);
+      v.removeEventListener("error", onError);
+      try {
+        v.remove();
+      } catch {
+        /* fine */
+      }
+    };
+    const onLoad = () => {
+      const dur = Number.isFinite(v.duration) ? v.duration : 0;
+      const result = {
+        durationSecs: dur,
+        width: v.videoWidth,
+        height: v.videoHeight,
+        // We can't read frame rate from the DOM. Default to 30 — the
+        // most common rate for screen recordings + modern web video.
+        // Users with 24/25/29.97/60 sources can change the timebase
+        // in their NLE after import.
+        frameRate: 30,
+      };
+      cleanup();
+      resolve(result);
+    };
+    const onError = () => {
+      cleanup();
+      reject(new Error("Couldn't probe source video metadata."));
+    };
+    v.addEventListener("loadedmetadata", onLoad);
+    v.addEventListener("error", onError);
+    document.body.appendChild(v);
+  });
+}
+
+/** Strip directory parts. */
+function basenameLite(p: string): string {
+  const i = Math.max(p.lastIndexOf("/"), p.lastIndexOf("\\"));
+  return i === -1 ? p : p.slice(i + 1);
 }
 
 function readStoredMaxEdge(): number {
@@ -236,10 +405,12 @@ export default function App() {
   // Chat state — M-A stubs the planner. Real Claude lives in M-B.
   const [chatMessages, setChatMessages] = useState<ChatMessage[]>([]);
   const [chatBusy, setChatBusy] = useState(false);
-  // Ops attached to assistant messages, keyed by message id. Lifted
-  // out of ChatMessage so we don't have to serialise BigInt-ish ops
-  // through React state diffing.
-  const proposedOpsRef = useRef<Map<string, Op[]>>(new Map());
+  // Proposals attached to assistant messages, keyed by message id.
+  // Held outside ChatMessage state so we don't have to serialise
+  // BigInt-shaped engine ops through React's state diffing. Tagged
+  // union so Approve can branch between apply-batch and undo.
+  type ChatProposal = { kind: "ops"; ops: Op[] } | { kind: "undo" };
+  const proposedOpsRef = useRef<Map<string, ChatProposal>>(new Map());
 
   // Imperative handle to the transcript pane so the chat planner can
   // read the current transcript + ingest snapshot without prop traffic.
@@ -274,6 +445,30 @@ export default function App() {
   // Export state — full-res render of the current cut to .sift/exports/.
   const [exporting, setExporting] = useState(false);
   const [exportStatus, setExportStatus] = useState<string | null>(null);
+
+  // Cut-list tab state: live render plan + active transcript. We
+  // pull the render plan from the engine every time the head changes
+  // (debounced via headSig). The transcript is a snapshot updated by
+  // an effect that watches transcriptRef + active video.
+  const [cutListRanges, setCutListRanges] = useState<RenderRangesResult | null>(null);
+  const [cutListTranscript, setCutListTranscript] = useState<Transcript | null>(null);
+  useEffect(() => {
+    let cancelled = false;
+    void (async () => {
+      const r = await project.renderRanges();
+      if (cancelled) return;
+      setCutListRanges(r);
+    })();
+    return () => {
+      cancelled = true;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [headSig]);
+  useEffect(() => {
+    const state = transcriptRef.current?.getState();
+    setCutListTranscript(state?.transcript ?? null);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeVideoPath, headSig]);
 
   // ── Layout: collapsed panels + drag-to-resize widths ───────────────
   const [layout, setLayout] = useState<LayoutState>(readLayout);
@@ -431,6 +626,11 @@ export default function App() {
         setActiveTab("transcript");
         return;
       }
+      if (mod && e.key === "3") {
+        e.preventDefault();
+        setActiveTab("cutlist");
+        return;
+      }
       if (mod && e.key.toLowerCase() === "z") {
         e.preventDefault();
         if (e.shiftKey) void project.redo();
@@ -459,68 +659,195 @@ export default function App() {
     return () => window.removeEventListener("keydown", onKey);
   }, [project, toggleLeftCollapse, toggleRightCollapse]);
 
-  // M-A stub planner: deterministic intent matching against the
-  // current transcript. Real Claude tool-use replaces this in M-B
-  // with no change to the ChatPanel surface.
+  // M-B chat: stream a plan from Claude via sift-ai. Claude returns
+  // text (rationale) + one tool call that we resolve to either a
+  // clip_delete batch (delete_words / delete_range) or an undo. The
+  // approve flow + snippet preview pipeline below is unchanged from
+  // M-A — only the source of the proposal moved from a regex stub
+  // to a real LLM.
   const onChatSubmit = useCallback(
     async (text: string) => {
+      const transcriptState = transcriptRef.current?.getState();
       const userMsg: ChatMessage = {
         id: ulidLite(),
         role: "user",
         body: text,
         createdAt: Date.now(),
       };
-      setChatMessages((prev) => [...prev, userMsg]);
-      setChatBusy(true);
-      // Tiny artificial delay so the "thinking…" pill shows.
-      await new Promise((r) => setTimeout(r, 200));
-
-      const proposal = planFromHandle(text, transcriptRef.current);
       const msgId = ulidLite();
       const artifactId = `${msgId}-a`;
-      if (proposal.actionable && proposal.ops.length > 0) {
-        proposedOpsRef.current.set(msgId, proposal.ops);
+      // Capture prior chat turns BEFORE appending the new user message,
+      // so we don't double-send it when the server formats the user
+      // message body and appends it at the end of the Anthropic
+      // messages list.
+      const priorHistory: PlanChatTurnPayload[] = chatMessages.map((m) => ({
+        role: m.role,
+        content: m.body,
+      }));
+      setChatMessages((prev) => [
+        ...prev,
+        userMsg,
+        {
+          id: msgId,
+          role: "assistant",
+          body: "",
+          createdAt: Date.now(),
+        },
+      ]);
+      setChatBusy(true);
+
+      if (!transcriptState) {
+        setChatMessages((prev) =>
+          prev.map((m) =>
+            m.id !== msgId
+              ? m
+              : {
+                  ...m,
+                  body:
+                    "There's no transcript loaded for the active video yet. "
+                    + "Pick a video in the folder pane and wait for Whisper to finish.",
+                },
+          ),
+        );
+        setChatBusy(false);
+        return;
       }
-      const transcriptState = transcriptRef.current?.getState() ?? null;
-      const sourcePath =
-        transcriptState?.sourcePath ?? activeVideoPath ?? null;
-      const canRenderSnippet =
-        proposal.actionable
-        && transcriptState !== null
-        && sourcePath !== null
-        && proposal.deletedWordIndices.length > 0
-        && folder !== null;
 
-      const aiMsg: ChatMessage = {
-        id: msgId,
-        role: "assistant",
-        body: proposal.body,
-        ...(proposal.question === undefined ? {} : { question: proposal.question }),
-        createdAt: Date.now(),
-        artifacts: proposal.actionable
-          ? [
-              {
-                id: artifactId,
-                caption: `Proposed edit · ${proposal.ops.length} op${proposal.ops.length === 1 ? "" : "s"}`,
-                blobUrl: null,
-                rendering: canRenderSnippet,
-                error: null,
-              },
-            ]
-          : [],
-      };
-      setChatMessages((prev) => [...prev, aiMsg]);
+      // Build the current render plan for context. If the engine has
+      // nothing yet we just send an empty list — Claude treats that as
+      // "the whole transcript is in the cut".
+      let renderPlan: PlanKeptRangePayload[] = [];
+      try {
+        const r = await project.renderRanges();
+        renderPlan =
+          r?.ranges.map((rg) => ({
+            start_ticks: rg.start_ticks,
+            end_ticks: rg.end_ticks,
+          })) ?? [];
+      } catch {
+        renderPlan = [];
+      }
+
+      let rationale = "";
+      let proposal: ResolvedProposal | null = null;
+      let errored = false;
+
+      try {
+        for await (const chunk of getAIClient().plan({
+          command: text,
+          transcript: transcriptState.transcript,
+          render_plan: renderPlan,
+          chat_history: priorHistory,
+        })) {
+          if (chunk.type === "rationale") {
+            const t =
+              typeof chunk.payload.text === "string" ? chunk.payload.text : "";
+            rationale += t;
+            setChatMessages((prev) =>
+              prev.map((m) => (m.id !== msgId ? m : { ...m, body: rationale })),
+            );
+          } else if (chunk.type === "op") {
+            proposal = resolveClaudeAction(chunk.payload, transcriptState, rationale);
+          } else if (chunk.type === "error") {
+            const errMsg =
+              typeof chunk.payload.message === "string"
+                ? chunk.payload.message
+                : "Unknown error.";
+            rationale = `Sift couldn't reach Claude: ${errMsg}`;
+            setChatMessages((prev) =>
+              prev.map((m) => (m.id !== msgId ? m : { ...m, body: rationale })),
+            );
+            errored = true;
+            break;
+          }
+          // "done" / "question" pass through silently.
+        }
+      } catch (e) {
+        const errMsg =
+          e instanceof AIServiceError
+            ? `sift-ai ${e.status}: ${e.detail}`
+            : e instanceof Error
+              ? e.message
+              : String(e);
+        rationale = rationale
+          ? `${rationale}\n\nStream interrupted: ${errMsg}`
+          : `Sift couldn't reach Claude: ${errMsg}`;
+        setChatMessages((prev) =>
+          prev.map((m) => (m.id !== msgId ? m : { ...m, body: rationale })),
+        );
+        errored = true;
+      }
+
       setChatBusy(false);
+      if (errored || proposal === null) return;
 
-      // Kick off the snippet render in the background. The message
-      // already exists in chat with `rendering: true`; we patch in the
-      // Blob URL (or an error) when FFmpeg finishes.
-      if (canRenderSnippet && transcriptState !== null && sourcePath !== null && folder !== null) {
+      if (proposal.kind === "non_actionable") {
+        const finalBody = proposal.body;
+        setChatMessages((prev) =>
+          prev.map((m) => (m.id !== msgId ? m : { ...m, body: finalBody })),
+        );
+        return;
+      }
+
+      if (proposal.kind === "undo") {
+        proposedOpsRef.current.set(msgId, { kind: "undo" });
+        setChatMessages((prev) =>
+          prev.map((m) =>
+            m.id !== msgId
+              ? m
+              : {
+                  ...m,
+                  body: proposal.body,
+                  artifacts: [
+                    {
+                      id: artifactId,
+                      caption: proposal.caption,
+                      blobUrl: null,
+                      rendering: false,
+                      error: null,
+                    },
+                  ],
+                },
+          ),
+        );
+        return;
+      }
+
+      // proposal.kind === "ops"
+      proposedOpsRef.current.set(msgId, { kind: "ops", ops: proposal.ops });
+      const sourcePath = transcriptState.sourcePath ?? activeVideoPath ?? null;
+      const canRenderSnippet =
+        sourcePath !== null
+        && folder !== null
+        && proposal.deletedWordIndices.length > 0;
+
+      setChatMessages((prev) =>
+        prev.map((m) =>
+          m.id !== msgId
+            ? m
+            : {
+                ...m,
+                body: proposal.body,
+                artifacts: [
+                  {
+                    id: artifactId,
+                    caption: proposal.caption,
+                    blobUrl: null,
+                    rendering: canRenderSnippet,
+                    error: null,
+                  },
+                ],
+              },
+        ),
+      );
+
+      if (canRenderSnippet && sourcePath !== null && folder !== null) {
+        const deletedIndices = proposal.deletedWordIndices;
         void (async () => {
           try {
             const ranges: PreviewRenderRange[] = computeSnippetRangesAfterDeletes(
               transcriptState,
-              proposal.deletedWordIndices,
+              deletedIndices,
               sourcePath,
               { maxSecs: 15 },
             );
@@ -546,10 +873,6 @@ export default function App() {
               return;
             }
             const outPath = `${folder.siftPath}/cache/snippet-${artifactId}.mp4`;
-            // Snippet previews are always lightweight — cap at 720p
-            // regardless of the user's render-resolution preference so
-            // chat artifacts stay snappy. Full quality kicks in for
-            // "Play cut" and Export below.
             const snippetEdge = Math.min(maxEdge, 1280);
             const result = await renderPreviewToFile(ranges, outPath, snippetEdge);
             const blobUrl = await previewFileToBlobUrl(result.output_path);
@@ -588,13 +911,33 @@ export default function App() {
         })();
       }
     },
-    [activeVideoPath, folder],
+    [activeVideoPath, folder, chatMessages, project, maxEdge],
   );
 
   const onChatApprove = useCallback(
     async (id: string) => {
-      const ops = proposedOpsRef.current.get(id);
-      if (!ops || ops.length === 0) return;
+      const proposal = proposedOpsRef.current.get(id);
+      if (!proposal) return;
+      if (proposal.kind === "undo") {
+        const r = await project.undo();
+        if (r === null) {
+          setChatMessages((prev) =>
+            prev.map((m) =>
+              m.id === id
+                ? { ...m, body: `${m.body}\n\nNothing to undo.` }
+                : m,
+            ),
+          );
+          return;
+        }
+        proposedOpsRef.current.delete(id);
+        setChatMessages((prev) =>
+          prev.map((m) => (m.id === id ? { ...m, applied: true } : m)),
+        );
+        return;
+      }
+      const ops = proposal.ops;
+      if (ops.length === 0) return;
       const outcome = await project.applyBatch(ops, { group_undo: true });
       if (!outcome.ok) {
         setChatMessages((prev) =>
@@ -687,6 +1030,57 @@ export default function App() {
       setExporting(false);
     }
   }, [folder, exporting, maxEdge]);
+
+  const [fcpxmlExporting, setFcpxmlExporting] = useState(false);
+  const onExportFcpxml = useCallback(async () => {
+    if (!folder || !activeVideoPath || fcpxmlExporting) return;
+    setFcpxmlExporting(true);
+    setExportStatus(null);
+    try {
+      const ranges = await project.renderRanges();
+      if (ranges === null || ranges.ranges.length === 0) {
+        setExportStatus("Nothing to export — empty timeline.");
+        return;
+      }
+      // Probe the source MP4 for its real duration via a hidden
+      // <video> element so the FCPXML asset length matches reality.
+      // Frame rate isn't exposed by HTMLVideoElement, so we default
+      // to 30fps and tell the user in a TODO; users can change it
+      // in their NLE if the source is 24/25/29.97/60.
+      const probe = await probeVideoMeta(activeVideoPath);
+      const xml = buildFcpxml({
+        sourcePath: activeVideoPath,
+        sourceDurationSecs: probe.durationSecs,
+        frameRate: probe.frameRate,
+        width: probe.width,
+        height: probe.height,
+        ranges: rangesFromRenderResult(ranges.ranges),
+        projectName: `Sift — ${basenameLite(activeVideoPath)}`,
+      });
+      const { save: saveDialog } = await import("@tauri-apps/plugin-dialog");
+      const { writeTextFile } = await import("@tauri-apps/plugin-fs");
+      const stamp = new Date()
+        .toISOString()
+        .replace(/[:.]/g, "-")
+        .replace(/-\d{3}Z$/, "Z");
+      const defaultPath = `${folder.siftPath}/exports/sift-${stamp}.fcpxml`;
+      const out = await saveDialog({
+        title: "Export FCPXML",
+        defaultPath,
+        filters: [{ name: "FCPXML", extensions: ["fcpxml", "xml"] }],
+      });
+      if (typeof out !== "string") return;
+      await writeTextFile(out, xml);
+      setExportStatus(`Exported FCPXML to ${out}`);
+    } catch (e) {
+      setExportStatus(
+        `FCPXML export failed: ${e instanceof Error ? e.message : String(e)}`,
+      );
+    } finally {
+      setFcpxmlExporting(false);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [folder, activeVideoPath, fcpxmlExporting]);
 
   const onClearChat = useCallback(() => {
     // Revoke all snippet Blob URLs we handed out — they keep the
@@ -858,6 +1252,24 @@ export default function App() {
                 )}
                 <button
                   type="button"
+                  className="btn is-tertiary is-sm"
+                  onClick={() => void onExportFcpxml()}
+                  disabled={!folder || !activeVideoPath || fcpxmlExporting || editCount === 0}
+                  title={
+                    editCount === 0
+                      ? "Make an edit first — there's nothing to export"
+                      : "Export an FCPXML hand-off for Final Cut Pro / DaVinci Resolve / Premiere"
+                  }
+                >
+                  {fcpxmlExporting ? (
+                    <Loader2 size={12} strokeWidth={2} className="spin" />
+                  ) : (
+                    <FileCode2 size={12} strokeWidth={2} />
+                  )}
+                  {fcpxmlExporting ? "Exporting…" : "FCPXML"}
+                </button>
+                <button
+                  type="button"
                   className="btn is-primary is-sm"
                   onClick={() => void onExportCut()}
                   disabled={!folder || exporting || editCount === 0}
@@ -925,6 +1337,20 @@ export default function App() {
                 whisperModel={whisperModel}
                 onWhisperModelChange={onWhisperModelChange}
                 siftPath={folder?.siftPath ?? null}
+              />
+            </div>
+            <div
+              style={{
+                position: "absolute",
+                inset: 0,
+                display: activeTab === "cutlist" ? "flex" : "none",
+                flexDirection: "column",
+              }}
+            >
+              <CutListPane
+                ranges={cutListRanges}
+                transcript={cutListTranscript}
+                hasVideo={activeVideoPath !== null}
               />
             </div>
           </div>

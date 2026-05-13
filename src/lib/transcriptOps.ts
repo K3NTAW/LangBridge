@@ -9,6 +9,7 @@
 import type { Transcript } from "./aiClient";
 import { asId, type ClipId, type Op } from "./ops";
 import { detectFillers } from "./transcriptCleanup";
+import { TICKS_PER_SECOND } from "./time";
 
 /** Result of transcript-to-engine ingest: word-index → clip-id map. */
 export interface IngestResult {
@@ -62,6 +63,45 @@ export function buildFillerDeleteOps(
       clip_id: asId<"ClipId">(clipId) as ClipId,
       ripple: false,
     });
+  }
+  return { ops, wordIndices };
+}
+
+/**
+ * Build a batch of `clip_delete` ops for every transcript word whose
+ * source range falls fully inside `[startSecs, endSecs]`.
+ *
+ * Used by the stub planner (and, eventually, Claude tool-use) to
+ * resolve natural-language references like "drop 2:23 to 3:45" to
+ * concrete word-level delete ops. Words already deleted are
+ * skipped; zero-duration words (never ingested) are skipped.
+ */
+export function buildRangeDeleteOps(
+  state: TranscriptState,
+  startSecs: number,
+  endSecs: number,
+): { ops: Op[]; wordIndices: number[] } {
+  if (!(endSecs > startSecs)) {
+    return { ops: [], wordIndices: [] };
+  }
+  const tps = Number(TICKS_PER_SECOND);
+  const startTicks = startSecs * tps;
+  const endTicks = endSecs * tps;
+  const ops: Op[] = [];
+  const wordIndices: number[] = [];
+  for (let i = 0; i < state.transcript.words.length; i++) {
+    const w = state.transcript.words[i]!;
+    if (w.start_ticks >= startTicks && w.end_ticks <= endTicks) {
+      if (state.deleted.has(i)) continue;
+      const clipId = state.ingest.wordToClipId.get(i);
+      if (clipId === undefined) continue;
+      wordIndices.push(i);
+      ops.push({
+        kind: "clip_delete",
+        clip_id: asId<"ClipId">(clipId) as ClipId,
+        ripple: false,
+      });
+    }
   }
   return { ops, wordIndices };
 }

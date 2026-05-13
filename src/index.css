@@ -1134,6 +1134,80 @@ body {
   flex: 0 0 auto;
 }
 
+/* ─── Cut list pane ─────────────────────────────────────────────── */
+.cutlist-pane {
+  display: flex;
+  flex-direction: column;
+  flex: 1 1 auto;
+  min-height: 0;
+  background: var(--bg-base);
+}
+.cutlist-summary {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 10px 14px;
+  border-bottom: 1px solid var(--border-default);
+  font-size: 11.5px;
+  color: var(--fg-muted);
+}
+.cutlist-summary-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+}
+.cutlist-rows {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 6px 0;
+}
+.cutlist-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  padding: 8px 14px;
+  border-bottom: 1px solid var(--border-subtle, rgba(255, 255, 255, 0.04));
+}
+.cutlist-row:hover {
+  background: var(--bg-hover);
+}
+.cutlist-row-idx {
+  flex: 0 0 32px;
+  color: var(--fg-faint);
+  font-size: 11px;
+  padding-top: 1px;
+}
+.cutlist-row-body {
+  flex: 1 1 auto;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+.cutlist-row-times {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--fg);
+  font-size: 12px;
+}
+.cutlist-row-arrow {
+  color: var(--fg-faint);
+}
+.cutlist-row-duration {
+  color: var(--fg-muted);
+  margin-left: 4px;
+}
+.cutlist-row-preview {
+  color: var(--fg-muted);
+  font-size: 12px;
+  line-height: 1.5;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
 /* ─── Empty state ───────────────────────────────────────────────── */
 .empty {
   display: flex;

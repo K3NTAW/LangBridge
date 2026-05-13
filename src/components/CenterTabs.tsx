@@ -4,10 +4,10 @@
  * Uses the design-system .tab-strip / .tab classes from index.css. The
  * `right` slot holds status + action buttons (rendered upstream in App.tsx).
  */
-import { LayoutGrid, ScrollText } from "lucide-react";
+import { LayoutGrid, ListOrdered, ScrollText } from "lucide-react";
 import type { ReactNode } from "react";
 
-export type CenterTab = "player" | "transcript";
+export type CenterTab = "player" | "transcript" | "cutlist";
 
 interface Props {
   active: CenterTab;
@@ -27,6 +27,12 @@ const TABS: { id: CenterTab; label: string; icon: ReactNode; hint: string }[] = 
     label: "Transcript",
     icon: <ScrollText size={12} strokeWidth={2} />,
     hint: "⌘2",
+  },
+  {
+    id: "cutlist",
+    label: "Cut list",
+    icon: <ListOrdered size={12} strokeWidth={2} />,
+    hint: "⌘3",
   },
 ];
 
