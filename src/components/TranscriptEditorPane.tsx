@@ -99,6 +99,7 @@ import {
   type TranscriptState,
 } from "../lib/transcriptOps";
 import { readCachedTranscript, writeCachedTranscript } from "../lib/transcriptCache";
+import { readCachedIngest, writeCachedIngest } from "../lib/perVideoProject";
 import { WHISPER_MODEL_OPTIONS } from "../lib/whisperModels";
 import { cn } from "../lib/cn";
 import { modKeySymbol } from "../lib/modKey";
@@ -312,22 +313,49 @@ export const TranscriptEditorPane = forwardRef<TranscriptHandle, Props>(function
     return line;
   }, [silenceStrip, transcript]);
 
+  // `lastReconciledHead` is kept (writers in pipeline/rehydrate reset
+  // it via this ref) but the reconcile effect now also cares about
+  // transcript identity — see below.
   const lastReconciledHead = useRef<string | null | undefined>(undefined);
+  // Keys the last reconciled state by BOTH engine head AND transcript
+  // identity. Switching videos changes the transcript object even if
+  // the engine head momentarily matches, so we have to invalidate on
+  // either signal — otherwise a stale reconcile from the old transcript
+  // can clobber the correct one and "undo" the previous video's edits.
+  const lastReconciledStateRef = useRef<{
+    headValue: string | null;
+    transcript: Transcript;
+  } | null>(null);
+  // Monotonic generation counter — every reconcile bumps it and only
+  // commits its setDeleted() if the counter still matches when its
+  // async renderRanges() resolves. Protects against the case where a
+  // newer reconcile (e.g. after rehydrate sets the right transcript)
+  // is overtaken by an older one whose closure captured the wrong
+  // transcript.
+  const reconcileGenRef = useRef(0);
   const transcribeLockRef = useRef(false);
   const bootstrapHandledRef = useRef<string | null>(null);
 
-  // After every engine head change, recompute the deleted set from
-  // the engine's render plan. This is the synchronization point that
-  // makes the UI converge to engine state regardless of where an
-  // undo/redo/apply was triggered.
+  // After every engine head OR transcript change, recompute the
+  // deleted set from the engine's render plan. This is the
+  // synchronization point that makes the UI converge to engine state
+  // regardless of where an undo/redo/apply/video-swap was triggered.
   useEffect(() => {
     if (transcript === null || ingest === null) return;
     const headValue = project.head?.head ?? null;
-    if (lastReconciledHead.current === headValue) return;
+    const last = lastReconciledStateRef.current;
+    if (last !== null && last.headValue === headValue && last.transcript === transcript) {
+      return;
+    }
+    lastReconciledStateRef.current = { headValue, transcript };
     lastReconciledHead.current = headValue;
+    const gen = ++reconcileGenRef.current;
     void (async () => {
       const r = await project.renderRanges();
       if (r === null) return;
+      // Drop if a newer reconcile took over while we were awaiting —
+      // its setDeleted is the authoritative one.
+      if (reconcileGenRef.current !== gen) return;
       setDeleted(reconcileDeleted(transcript.words, r.ranges));
     })();
   }, [project, transcript, ingest]);
@@ -433,6 +461,20 @@ export const TranscriptEditorPane = forwardRef<TranscriptHandle, Props>(function
         setIngest({ wordToClipId });
         lastReconciledHead.current = null;
         setDeleted(new Set());
+        // Persist the wordIndex → clipId mapping so we can rehydrate the
+        // editor on next open without re-running the ingest pipeline
+        // (which would wipe any edits the user made between sessions).
+        if (siftPath) {
+          writeCachedIngest(siftPath, picked, wordToClipId)
+            .then(() =>
+              console.log(
+                `[sift] ingest sidecar: wrote ${wordToClipId.size} clips for ${picked}`,
+              ),
+            )
+            .catch((e) => console.error("[sift] ingest sidecar: write failed", e));
+        } else {
+          console.warn("[sift] ingest sidecar: no siftPath, not persisting mapping");
+        }
 
         const ingestSnapshot: IngestResult = { wordToClipId };
         const { ops: fillerOps, wordIndices } = buildFillerDeleteOps(transcriptResult, ingestSnapshot);
@@ -463,6 +505,67 @@ export const TranscriptEditorPane = forwardRef<TranscriptHandle, Props>(function
     [project, whisperModel, siftPath],
   );
 
+  /**
+   * Rehydrate the editor without touching the engine.
+   *
+   * When the user re-opens a video they've already edited, the engine
+   * project file has been loaded by App.tsx (its op log replays into
+   * the same engine state we'd have after a fresh ingest). The
+   * transcript editor just needs to repopulate its own React state
+   * (`transcript` + `ingest.wordToClipId`) from disk so the words
+   * render and the wordIndex → clipId mapping is in place for future
+   * edits. The `lastReconciledHead` reset triggers the existing
+   * effect to recompute `deleted` from the engine's render plan.
+   *
+   * Returns true if rehydrate succeeded; false means the sidecar
+   * is missing and the caller should fall back to the full pipeline.
+   */
+  const rehydrateFromCache = useCallback(
+    async (picked: string): Promise<boolean> => {
+      if (!siftPath) {
+        console.warn("[sift] rehydrate: no siftPath, falling through to pipeline");
+        return false;
+      }
+      if (!whisperModel.trim()) {
+        console.warn("[sift] rehydrate: no whisperModel, falling through to pipeline");
+        return false;
+      }
+      try {
+        const [transcriptResult, wordToClipId] = await Promise.all([
+          readCachedTranscript(siftPath, picked, whisperModel),
+          readCachedIngest(siftPath, picked),
+        ]);
+        if (transcriptResult === null) {
+          console.warn(
+            `[sift] rehydrate: transcript cache miss for ${picked} (model=${whisperModel}) — falling through to pipeline`,
+          );
+          return false;
+        }
+        if (wordToClipId === null) {
+          console.warn(
+            `[sift] rehydrate: ingest sidecar missing for ${picked} — falling through to pipeline (edits will be LOST)`,
+          );
+          return false;
+        }
+        console.log(
+          `[sift] rehydrate: ok for ${picked} (${transcriptResult.words.length} words, ${wordToClipId.size} clips)`,
+        );
+        setExportSummary(null);
+        setAutoClean(null);
+        setSilenceStrip(null);
+        setIngest({ wordToClipId });
+        lastReconciledHead.current = null;
+        setDeleted(new Set());
+        setStatus({ kind: "ready", mediaPath: picked, transcript: transcriptResult });
+        return true;
+      } catch (e) {
+        console.error("[sift] rehydrate: failed", e);
+        return false;
+      }
+    },
+    [siftPath, whisperModel],
+  );
+
   useEffect(() => {
     if (!bootstrapMediaPath) {
       bootstrapHandledRef.current = null;
@@ -472,8 +575,41 @@ export const TranscriptEditorPane = forwardRef<TranscriptHandle, Props>(function
     if (bootstrapHandledRef.current === bootstrapMediaPath) return;
     bootstrapHandledRef.current = bootstrapMediaPath;
     onBootstrapConsumed?.();
-    void runTranscribePipeline(bootstrapMediaPath);
-  }, [bootstrapMediaPath, onBootstrapConsumed, runTranscribePipeline, whisperModel]);
+    console.log(`[sift] bootstrap fired: path=${bootstrapMediaPath}`);
+    void (async () => {
+      // Detect "engine already has this video's state loaded from disk"
+      // by asking the engine for its current render plan. We CAN'T use
+      // `project.head.n_ops` here because the engine resets its op log
+      // on load (only the materialised project state — clips with
+      // deletes applied — is preserved). After a load, n_ops is 0 even
+      // though the project has clips.
+      let engineHasState = false;
+      try {
+        const r = await project.renderRanges();
+        engineHasState = r !== null && r.ranges.length > 0;
+      } catch {
+        engineHasState = false;
+      }
+      console.log(
+        `[sift] bootstrap: engineHasState=${engineHasState} for ${bootstrapMediaPath}`,
+      );
+      if (engineHasState) {
+        const ok = await rehydrateFromCache(bootstrapMediaPath);
+        if (ok) return;
+        console.warn(
+          `[sift] bootstrap: rehydrate failed for ${bootstrapMediaPath}, running pipeline (this WILL wipe engine state)`,
+        );
+      }
+      void runTranscribePipeline(bootstrapMediaPath);
+    })();
+  }, [
+    bootstrapMediaPath,
+    onBootstrapConsumed,
+    runTranscribePipeline,
+    rehydrateFromCache,
+    whisperModel,
+    project,
+  ]);
 
   const onPickVideo = useCallback(async () => {
     const picked = await openDialog({

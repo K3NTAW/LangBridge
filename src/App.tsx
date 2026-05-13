@@ -42,6 +42,7 @@ import { useEngineProject } from "./lib/useEngineProject";
 import { loadStoredWhisperModel, saveStoredWhisperModel } from "./lib/whisperModels";
 import { ulidLite } from "./lib/ulid";
 import type { FolderProject } from "./lib/folderProject";
+import { ensureProjectsDir, getVideoProjectPath } from "./lib/perVideoProject";
 import { planFromHandle } from "./lib/stubPlanner";
 import type { TranscriptHandle } from "./lib/transcriptOps";
 import type { Op } from "./lib/ops";
@@ -139,57 +140,87 @@ export default function App() {
   const [persistenceStatus, setPersistenceStatus] = useState<
     "idle" | "loading" | "saving" | "saved" | "error"
   >("idle");
-  // Track which folder we last loaded so we don't reload on stat / refresh.
-  const loadedFolderPathRef = useRef<string | null>(null);
+  // ── Per-video engine project files ────────────────────────────────
+  // Each video in the folder gets its own `<siftPath>/projects/<slug>.json`.
+  // Switching videos = save the CURRENT engine file first, then load
+  // (or new+save) the next one. Without this the engine state of the
+  // outgoing video would be clobbered by the next ingest pipeline.
+  const activeProjectFilePath = useMemo(() => {
+    if (!folder || !activeVideoPath) return null;
+    return getVideoProjectPath(folder.siftPath, activeVideoPath);
+  }, [folder, activeVideoPath]);
+  // The path we most recently *loaded* the engine from. Used to flush
+  // pending state to the OLD path before switching to a new video.
+  const loadedProjectFilePathRef = useRef<string | null>(null);
 
-  // ── Auto-load on folder open ──────────────────────────────────────
-  // When the user opens (or switches) a folder, point the engine at
-  // `<folder>/.sift/project.json`. If it exists we load it; if not we
-  // bootstrap a fresh project there.
   useEffect(() => {
-    if (!folder) {
-      loadedFolderPathRef.current = null;
+    if (!folder || !activeProjectFilePath || !activeVideoPath) {
+      loadedProjectFilePathRef.current = null;
       setPersistenceStatus("idle");
       return;
     }
-    if (loadedFolderPathRef.current === folder.folderPath) return;
-    loadedFolderPathRef.current = folder.folderPath;
+    if (loadedProjectFilePathRef.current === activeProjectFilePath) return;
+    const previousPath = loadedProjectFilePathRef.current;
+    loadedProjectFilePathRef.current = activeProjectFilePath;
 
     let cancelled = false;
     (async () => {
       setPersistenceStatus("loading");
       try {
-        const has = await exists(folder.projectFilePath).catch(() => false);
+        await ensureProjectsDir(folder.siftPath);
+        // Flush the outgoing video's edits before swapping.
+        if (previousPath !== null) {
+          console.log(
+            `[sift] switch: flushing outgoing engine state to ${previousPath}`,
+          );
+          const saveR = await project.saveProjectToPath(previousPath);
+          console.log(
+            `[sift] switch: flush ${saveR.ok ? "ok" : "FAILED: " + saveR.error}`,
+          );
+        }
+        if (cancelled) return;
+        const has = await exists(activeProjectFilePath).catch(() => false);
         if (cancelled) return;
         if (has) {
-          const r = await project.loadProjectFromPath(folder.projectFilePath);
+          console.log(`[sift] switch: loading ${activeProjectFilePath}`);
+          const r = await project.loadProjectFromPath(activeProjectFilePath);
           if (cancelled) return;
+          console.log(
+            `[sift] switch: load ${r.ok ? "ok" : "FAILED: " + r.error}`,
+          );
           setPersistenceStatus(r.ok ? "saved" : "error");
         } else {
-          const r = await project.newProjectAtPath(folder.projectFilePath);
+          console.log(`[sift] switch: new project at ${activeProjectFilePath}`);
+          const r = await project.newProjectAtPath(activeProjectFilePath);
           if (cancelled) return;
           setPersistenceStatus(r.ok ? "saved" : "error");
         }
-      } catch {
+        if (cancelled) return;
+        // Tell the transcript pane to bootstrap *after* the engine is
+        // in the right state. Doing this in the activeVideoPath effect
+        // would race the load — the pane could see the old engine
+        // (n_ops > 0 from the previous video) and rehydrate against
+        // the wrong transcript, leaking edits across videos.
+        setBootstrapTranscribePath(activeVideoPath);
+      } catch (e) {
+        console.error("[sift] switch: error", e);
         if (!cancelled) setPersistenceStatus("error");
       }
     })();
     return () => {
       cancelled = true;
     };
-    // We intentionally depend only on the folder identity — `project`
-    // is a captured closure but the methods are stable callbacks.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [folder?.folderPath, folder?.projectFilePath]);
+  }, [activeProjectFilePath, activeVideoPath, folder?.siftPath]);
 
   // ── Auto-save on every engine head change ─────────────────────────
   // Debounced so a multi-op batch (e.g. transcript ingest) collapses
   // into a single write.
   const headSig = `${project.head?.head ?? ""}|${project.head?.n_ops ?? 0}`;
   useEffect(() => {
-    if (!folder) return;
+    if (!activeProjectFilePath) return;
     if (!project.head) return;
-    const path = folder.projectFilePath;
+    const path = activeProjectFilePath;
     const timer = window.setTimeout(async () => {
       setPersistenceStatus("saving");
       const r = await project.saveProjectToPath(path);
@@ -197,7 +228,7 @@ export default function App() {
     }, 400);
     return () => window.clearTimeout(timer);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [headSig, folder?.projectFilePath]);
+  }, [headSig, activeProjectFilePath]);
 
   // Center pane tab state.
   const [activeTab, setActiveTab] = useState<CenterTab>("player");
@@ -339,15 +370,12 @@ export default function App() {
     return `${left} 1fr ${right}`;
   }, [layout]);
 
-  // Transcribe in the background as soon as the user picks a video —
-  // does *not* depend on the Transcript tab being active. Switching
-  // tabs no longer interrupts or restarts transcription because both
-  // center-pane components stay mounted (see render below).
+  // Switching to a different source resets the player to its original.
+  // The transcript bootstrap kick-off lives in the per-video project
+  // load effect above — that way the engine state is guaranteed to be
+  // in place before TranscriptEditorPane decides whether to rehydrate
+  // or re-ingest.
   useEffect(() => {
-    if (activeVideoPath) {
-      setBootstrapTranscribePath(activeVideoPath);
-    }
-    // Switching to a different source resets the player to its original.
     setPlayerMode("original");
     setCutPlayerPath(null);
     setCutError(null);
