@@ -90,7 +90,11 @@ import {
   layoutTranscriptWords,
   whisperChipLabel,
 } from "../lib/transcriptDisplay";
-import { buildIngestOps, reconcileDeleted } from "../lib/transcriptIngest";
+import {
+  buildIngestOps,
+  computeWordToTimelineAt,
+  reconcileDeleted,
+} from "../lib/transcriptIngest";
 import {
   buildFillerDeleteOps as buildFillerDeleteOpsShared,
   buildWordIndexDeleteOps as buildWordIndexDeleteOpsShared,
@@ -448,7 +452,10 @@ export const TranscriptEditorPane = forwardRef<TranscriptHandle, Props>(function
 
         await project.newProject();
 
-        const { ops, wordToClipId } = buildIngestOps(picked, transcriptResult.words);
+        const { ops, wordToClipId, wordToTimelineAt } = buildIngestOps(
+          picked,
+          transcriptResult.words,
+        );
         const batchOutcome = await project.applyBatch(ops);
         if (!batchOutcome.ok) {
           setStatus({
@@ -458,14 +465,15 @@ export const TranscriptEditorPane = forwardRef<TranscriptHandle, Props>(function
           return;
         }
         await project.clearHistory();
-        setIngest({ wordToClipId });
+        setIngest({ wordToClipId, wordToTimelineAt });
         lastReconciledHead.current = null;
         setDeleted(new Set());
-        // Persist the wordIndex → clipId mapping so we can rehydrate the
-        // editor on next open without re-running the ingest pipeline
-        // (which would wipe any edits the user made between sessions).
+        // Persist both mappings so we can rehydrate the editor on next
+        // open without re-running the ingest pipeline (which would wipe
+        // any edits the user made between sessions). The timeline_at
+        // map is required for undelete to re-insert at the right gap.
         if (siftPath) {
-          writeCachedIngest(siftPath, picked, wordToClipId)
+          writeCachedIngest(siftPath, picked, wordToClipId, wordToTimelineAt)
             .then(() =>
               console.log(
                 `[sift] ingest sidecar: wrote ${wordToClipId.size} clips for ${picked}`,
@@ -476,7 +484,7 @@ export const TranscriptEditorPane = forwardRef<TranscriptHandle, Props>(function
           console.warn("[sift] ingest sidecar: no siftPath, not persisting mapping");
         }
 
-        const ingestSnapshot: IngestResult = { wordToClipId };
+        const ingestSnapshot: IngestResult = { wordToClipId, wordToTimelineAt };
         const { ops: fillerOps, wordIndices } = buildFillerDeleteOps(transcriptResult, ingestSnapshot);
         if (fillerOps.length > 0) {
           const frOutcome = await project.applyBatch(fillerOps, { group_undo: true });
@@ -531,7 +539,7 @@ export const TranscriptEditorPane = forwardRef<TranscriptHandle, Props>(function
         return false;
       }
       try {
-        const [transcriptResult, wordToClipId] = await Promise.all([
+        const [transcriptResult, ingestCache] = await Promise.all([
           readCachedTranscript(siftPath, picked, whisperModel),
           readCachedIngest(siftPath, picked),
         ]);
@@ -541,19 +549,33 @@ export const TranscriptEditorPane = forwardRef<TranscriptHandle, Props>(function
           );
           return false;
         }
-        if (wordToClipId === null) {
+        if (ingestCache === null) {
           console.warn(
             `[sift] rehydrate: ingest sidecar missing for ${picked} — falling through to pipeline (edits will be LOST)`,
           );
           return false;
         }
+        // Heal legacy v1 sidecars that only stored wordToClipId by
+        // recomputing the timeline positions from the cached transcript
+        // words. The packing logic is deterministic, so the result
+        // matches what the original ingest produced.
+        let wordToTimelineAt = ingestCache.wordToTimelineAt;
+        if (wordToTimelineAt.size === 0 && ingestCache.wordToClipId.size > 0) {
+          wordToTimelineAt = computeWordToTimelineAt(transcriptResult.words);
+          console.log(
+            `[sift] rehydrate: recomputed ${wordToTimelineAt.size} timeline positions for legacy sidecar`,
+          );
+        }
         console.log(
-          `[sift] rehydrate: ok for ${picked} (${transcriptResult.words.length} words, ${wordToClipId.size} clips)`,
+          `[sift] rehydrate: ok for ${picked} (${transcriptResult.words.length} words, ${ingestCache.wordToClipId.size} clips, ${wordToTimelineAt.size} timeline positions)`,
         );
         setExportSummary(null);
         setAutoClean(null);
         setSilenceStrip(null);
-        setIngest({ wordToClipId });
+        setIngest({
+          wordToClipId: ingestCache.wordToClipId,
+          wordToTimelineAt,
+        });
         lastReconciledHead.current = null;
         setDeleted(new Set());
         setStatus({ kind: "ready", mediaPath: picked, transcript: transcriptResult });
@@ -652,19 +674,39 @@ export const TranscriptEditorPane = forwardRef<TranscriptHandle, Props>(function
           return next;
         });
       } else {
-        // User wants to undelete by re-inserting the same clip.
+        // User wants to undelete by re-inserting the clip at the same
+        // timeline position it occupied during the original ingest.
+        //
+        // Using `w.start_ticks` here would be wrong: Whisper words can
+        // overlap in source time, so we pack them onto the timeline at
+        // running-sum positions instead. Re-inserting at the source
+        // position would either overlap an existing clip (engine
+        // rejects) or land in the wrong place. The packed position
+        // for each word is captured at ingest in `wordToTimelineAt`.
         const trackResult = await project.renderRanges();
         if (trackResult === null) return;
         const trackId = trackResult.track_id;
         if (trackId === null) return;
+        const sourceId = trackResult.ranges[0]?.source_id;
+        if (sourceId === undefined) return;
+        const packedAt = ingest.wordToTimelineAt.get(idx);
+        if (packedAt === undefined) {
+          // Legacy v1 ingest sidecar (no timeline positions). The
+          // user can still delete and export, but undelete requires
+          // a re-ingest. Tell them so via the engine error channel.
+          console.warn(
+            `[sift] undelete failed: no timeline_at for word ${idx} — re-transcribe the video to rebuild the ingest sidecar`,
+          );
+          return;
+        }
         const op: Op = {
           kind: "clip_insert",
           clip_id: asId<"ClipId">(clipId) as ClipId,
           track_id: asId<"TrackId">(trackId) as TrackId,
-          source_id: asId<"SourceId">(trackResult.ranges[0]?.source_id ?? "") as SourceId,
+          source_id: asId<"SourceId">(sourceId) as SourceId,
           src_in: BigInt(w.start_ticks),
           src_out: BigInt(w.end_ticks),
-          timeline_at: BigInt(w.start_ticks),
+          timeline_at: BigInt(packedAt),
         };
         const r = await project.apply(op);
         if (r === null) return;

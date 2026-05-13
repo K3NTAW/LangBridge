@@ -23,6 +23,15 @@ export interface BuildIngestOpsResult {
   ops: Op[];
   /** Map from word index to the clip id assigned during ingest. */
   wordToClipId: Map<number, string>;
+  /**
+   * Map from word index to the *timeline* position the clip was
+   * placed at. Whisper words can overlap in source time so the
+   * engine packs each clip onto the timeline at the running sum of
+   * preceding durations — that packed position is required when
+   * re-inserting an undeleted clip, since the original source-time
+   * position would collide with neighbouring clips.
+   */
+  wordToTimelineAt: Map<number, number>;
   /** Source id assigned to the imported video. */
   sourceId: string;
   /** Track id of the single video track that holds the per-word clips. */
@@ -54,6 +63,42 @@ export function ulidLite(): string {
   const randChars: string[] = [];
   for (let i = 0; i < 16; i++) randChars.push(ALPHABET[(rand[i] ?? 0) % 32] ?? "0");
   return timeChars.join("") + randChars.join("");
+}
+
+/**
+ * Recompute the wordIndex → packed timeline position map from the
+ * transcript words alone. Pure function — same packing logic
+ * `buildIngestOps` uses internally, factored out so the rehydrate
+ * path can rebuild the map for legacy v1 ingest sidecars (which
+ * stored only `wordToClipId`).
+ *
+ * The map is deterministic from the words array, so as long as the
+ * transcript cache matches what was originally ingested, the result
+ * matches what `buildIngestOps` emitted at ingest time.
+ */
+export function computeWordToTimelineAt(
+  words: readonly IngestableWord[],
+): Map<number, number> {
+  const map = new Map<number, number>();
+  const validIndices: number[] = [];
+  for (let i = 0; i < words.length; i++) {
+    const w = words[i]!;
+    if (w.end_ticks > w.start_ticks) validIndices.push(i);
+  }
+  validIndices.sort((a, b) => {
+    const wa = words[a]!;
+    const wb = words[b]!;
+    if (wa.start_ticks !== wb.start_ticks) return wa.start_ticks - wb.start_ticks;
+    if (wa.end_ticks !== wb.end_ticks) return wa.end_ticks - wb.end_ticks;
+    return a - b;
+  });
+  let timelineAt = 0;
+  for (const i of validIndices) {
+    const w = words[i]!;
+    map.set(i, timelineAt);
+    timelineAt += w.end_ticks - w.start_ticks;
+  }
+  return map;
 }
 
 /**
@@ -95,6 +140,7 @@ export function buildIngestOps(
     },
   ];
   const wordToClipId = new Map<number, string>();
+  const wordToTimelineAt = new Map<number, number>();
 
   const validIndices: number[] = [];
   for (let i = 0; i < words.length; i++) {
@@ -114,6 +160,7 @@ export function buildIngestOps(
     const w = words[i]!;
     const clipId = ulidLite();
     wordToClipId.set(i, clipId);
+    wordToTimelineAt.set(i, Number(timelineAt));
     const srcIn = BigInt(w.start_ticks);
     const srcOut = BigInt(w.end_ticks);
     ops.push({
@@ -127,7 +174,7 @@ export function buildIngestOps(
     });
     timelineAt += srcOut - srcIn;
   }
-  return { ops, wordToClipId, sourceId: sourceIdRaw, trackId: trackIdRaw };
+  return { ops, wordToClipId, wordToTimelineAt, sourceId: sourceIdRaw, trackId: trackIdRaw };
 }
 
 /**

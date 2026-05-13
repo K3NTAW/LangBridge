@@ -20,6 +20,8 @@ import {
 } from "lucide-react";
 import { useCallback, useEffect, useRef, useState, type FormEvent } from "react";
 
+import { modKeySymbol } from "../lib/modKey";
+
 export type ChatMessageRole = "user" | "assistant";
 
 export interface ChatArtifact {
@@ -116,15 +118,20 @@ export function ChatPanel({
           </button>
         ) : null}
         {onCollapse ? (
-          <button
-            type="button"
-            className="btn-collapse"
-            onClick={onCollapse}
-            title="Collapse chat pane"
-            aria-label="Collapse chat pane"
-          >
-            <ChevronRight size={13} strokeWidth={2} />
-          </button>
+          <>
+            <span className="kbd-hint" title="Toggle chat pane">
+              {modKeySymbol()}J
+            </span>
+            <button
+              type="button"
+              className="btn-collapse"
+              onClick={onCollapse}
+              title={`Collapse chat pane (${modKeySymbol()}J)`}
+              aria-label="Collapse chat pane"
+            >
+              <ChevronRight size={13} strokeWidth={2} />
+            </button>
+          </>
         ) : null}
       </div>
 

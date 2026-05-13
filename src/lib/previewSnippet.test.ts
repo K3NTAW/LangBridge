@@ -25,6 +25,7 @@ function makeState(opts: {
     },
     ingest: {
       wordToClipId: new Map(opts.words.map((_, i) => [i, `c${i}`])),
+      wordToTimelineAt: new Map(opts.words.map((_, i) => [i, i * 100])),
     },
     deleted: new Set(opts.deleted ?? []),
     sourcePath: "/x.mp4",

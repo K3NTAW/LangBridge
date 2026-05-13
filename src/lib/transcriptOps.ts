@@ -14,6 +14,19 @@ import { detectFillers } from "./transcriptCleanup";
 export interface IngestResult {
   /** Map from word index in `Transcript.words` to the clip id assigned during ingest. */
   wordToClipId: ReadonlyMap<number, string>;
+  /**
+   * Map from word index to the *timeline* position the clip was
+   * inserted at during ingest. We need this to re-insert a clip
+   * after the user un-deletes a word — the engine packs clips on
+   * the timeline at positions different from their source times
+   * (Whisper words often have overlapping source ranges), so
+   * `timeline_at` is not recoverable from `word.start_ticks`.
+   *
+   * Stored as plain JS `number` to keep the value JSON-serialisable
+   * for the per-video ingest sidecar. Callers convert to `BigInt`
+   * when building engine ops.
+   */
+  wordToTimelineAt: ReadonlyMap<number, number>;
 }
 
 /** A snapshot of the current transcript + ingest state. */

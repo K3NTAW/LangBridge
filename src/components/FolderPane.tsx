@@ -28,6 +28,7 @@ import {
 } from "../lib/folderProject";
 import type { TranscriptionEntry } from "../lib/transcriptionQueue";
 import type { SiftAiHealth } from "../lib/siftAiHealth";
+import { modKeySymbol } from "../lib/modKey";
 
 interface Props {
   folder: FolderProject | null;
@@ -105,15 +106,20 @@ export function FolderPane({
         <div className="panel-title">Folder</div>
         <div className="spacer" />
         {onCollapse ? (
-          <button
-            type="button"
-            className="btn-collapse"
-            onClick={onCollapse}
-            title="Collapse folder pane"
-            aria-label="Collapse folder pane"
-          >
-            <ChevronLeft size={13} strokeWidth={2} />
-          </button>
+          <>
+            <span className="kbd-hint" title="Toggle folder pane">
+              {modKeySymbol()}B
+            </span>
+            <button
+              type="button"
+              className="btn-collapse"
+              onClick={onCollapse}
+              title={`Collapse folder pane (${modKeySymbol()}B)`}
+              aria-label="Collapse folder pane"
+            >
+              <ChevronLeft size={13} strokeWidth={2} />
+            </button>
+          </>
         ) : null}
         {folder ? (
           <button

@@ -417,9 +417,7 @@ export default function App() {
     saveStoredWhisperModel(modelId);
   }, []);
 
-  // Keyboard shortcuts: tab switching + undo/redo. Project lifecycle
-  // hotkeys (⌘N/⌘O/⌘S) are deferred until folder-based persistence
-  // lands; the user opens folders via the FolderPane button.
+  // Keyboard shortcuts: tab switching + undo/redo + panel toggles.
   useEffect(() => {
     function onKey(e: KeyboardEvent) {
       const mod = e.metaKey || e.ctrlKey;
@@ -442,11 +440,24 @@ export default function App() {
       if (mod && e.key.toLowerCase() === "y") {
         e.preventDefault();
         void project.redo();
+        return;
+      }
+      // ⌘B → toggle folder pane (mirrors VS Code's sidebar shortcut).
+      if (mod && e.key.toLowerCase() === "b") {
+        e.preventDefault();
+        toggleLeftCollapse();
+        return;
+      }
+      // ⌘J → toggle chat pane (mirrors VS Code's panel shortcut).
+      if (mod && e.key.toLowerCase() === "j") {
+        e.preventDefault();
+        toggleRightCollapse();
+        return;
       }
     }
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [project]);
+  }, [project, toggleLeftCollapse, toggleRightCollapse]);
 
   // M-A stub planner: deterministic intent matching against the
   // current transcript. Real Claude tool-use replaces this in M-B
@@ -895,6 +906,7 @@ export default function App() {
                 cutMode={playerMode === "cut"}
                 editCount={editCount}
                 onResolutionDetected={onResolutionDetected}
+                active={activeTab === "player"}
               />
             </div>
             <div

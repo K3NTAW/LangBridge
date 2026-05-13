@@ -23,6 +23,12 @@ const FILLER_TRANSCRIPT: TranscriptState = {
       [2, "clip-c"],
       [3, "clip-d"],
     ]),
+    wordToTimelineAt: new Map<number, number>([
+      [0, 0],
+      [1, 1],
+      [2, 2],
+      [3, 3],
+    ]),
   },
 };
 
@@ -41,6 +47,10 @@ const CLEAN_TRANSCRIPT: TranscriptState = {
     wordToClipId: new Map<number, string>([
       [0, "clip-a"],
       [1, "clip-b"],
+    ]),
+    wordToTimelineAt: new Map<number, number>([
+      [0, 0],
+      [1, 1],
     ]),
   },
 };
