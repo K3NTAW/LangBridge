@@ -38,12 +38,20 @@ export function clipSecondsFromTicks(start_ticks: number): number {
 }
 
 /**
- * Whisper tokens sometimes carry a **leading space** as the word boundary.
- * We slice clips per token regardless; chip labels should collapse stray
- * whitespace but trimming alone strips that delimiter — layout adds gaps.
+ * Whisper tokens sometimes carry a **leading space** as the word boundary
+ * (" the", " word"); other producers emit bare tokens ("the", "word"). To
+ * render adjacent word buttons with visible separation regardless of the
+ * source convention, we collapse whitespace, trim, then prepend a U+00A0
+ * (NBSP). NBSP survives CSS whitespace collapsing on inline elements,
+ * where a regular space character would not.
  */
 export function whisperChipLabel(raw: string): string {
-  return raw.replace(/\s+/gu, " ").trim();
+  const collapsed = raw.replace(/\s+/gu, " ").trim();
+  if (collapsed.length === 0) return collapsed;
+  // U+00A0 NBSP — escaped explicitly so the no-irregular-whitespace
+  // lint rule doesn't flag literal NBSP. CSS preserves NBSP across
+  // inline elements where it would collapse a regular space.
+  return `\u00A0${collapsed}`;
 }
 
 /**

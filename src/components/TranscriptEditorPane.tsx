@@ -30,7 +30,16 @@
  * to the transcript view without needing the trigger source to also
  * call back into us.
  */
-import { useCallback, useEffect, useMemo, useRef, useState, type ChangeEvent } from "react";
+import {
+  forwardRef,
+  useCallback,
+  useEffect,
+  useImperativeHandle,
+  useMemo,
+  useRef,
+  useState,
+  type ChangeEvent,
+} from "react";
 import { open as openDialog, save as saveDialog } from "@tauri-apps/plugin-dialog";
 import {
   AlertCircle,
@@ -82,7 +91,14 @@ import {
   whisperChipLabel,
 } from "../lib/transcriptDisplay";
 import { buildIngestOps, reconcileDeleted } from "../lib/transcriptIngest";
-import { detectFillers } from "../lib/transcriptCleanup";
+import {
+  buildFillerDeleteOps as buildFillerDeleteOpsShared,
+  buildWordIndexDeleteOps as buildWordIndexDeleteOpsShared,
+  type IngestResult as SharedIngestResult,
+  type TranscriptHandle,
+  type TranscriptState,
+} from "../lib/transcriptOps";
+import { readCachedTranscript, writeCachedTranscript } from "../lib/transcriptCache";
 import { WHISPER_MODEL_OPTIONS } from "../lib/whisperModels";
 import { cn } from "../lib/cn";
 import { modKeySymbol } from "../lib/modKey";
@@ -97,6 +113,13 @@ interface Props {
   /** Whisper model id, or "" until the user selects one (onboarding). */
   whisperModel: string;
   onWhisperModelChange: (modelId: string) => void;
+  /**
+   * Path to the current folder's hidden `.sift/` directory, or null
+   * when running standalone (no folder open). Enables transcript
+   * caching: lookups read `<siftPath>/transcripts/...json` before
+   * hitting Whisper; successful runs write the same path back.
+   */
+  siftPath?: string | null;
 }
 
 type Status =
@@ -113,10 +136,8 @@ interface ExportSummary {
   nRanges: number;
 }
 
-interface IngestResult {
-  /** Map from word index to the clip id assigned during ingest. */
-  wordToClipId: ReadonlyMap<number, string>;
-}
+// IngestResult moved to lib/transcriptOps.ts so the chat planner can reuse it.
+type IngestResult = SharedIngestResult;
 
 /**
  * State of the most recent auto-clean pass.
@@ -148,48 +169,23 @@ function basename(p: string): string {
   return i === -1 ? p : p.substring(i + 1);
 }
 
-/** Build batched `ClipDelete` ops for detected filler words that were ingested. */
+/** Thin local adapter so existing call sites keep their signature. */
 function buildFillerDeleteOps(
   transcript: Transcript,
   ingest: IngestResult,
 ): { ops: Op[]; wordIndices: number[] } {
-  const fillerIdx = detectFillers(transcript.words);
-  const ops: Op[] = [];
-  const wordIndices: number[] = [];
-  for (const idx of fillerIdx) {
-    const clipId = ingest.wordToClipId.get(idx);
-    if (clipId === undefined) continue;
-    wordIndices.push(idx);
-    ops.push({
-      kind: "clip_delete",
-      clip_id: asId<"ClipId">(clipId) as ClipId,
-      ripple: false,
-    });
-  }
-  return { ops, wordIndices };
+  return buildFillerDeleteOpsShared({ transcript, ingest, deleted: new Set() });
 }
 
-/** Batch-delete clips for explicit word indices (silence strip). */
 function buildWordIndexDeleteOps(
   transcript: Transcript,
   ingest: IngestResult,
   indices: readonly number[],
 ): { ops: Op[]; wordIndices: number[] } {
-  const ops: Op[] = [];
-  const wordIndices: number[] = [];
-  const sorted = [...new Set(indices)].sort((a, b) => a - b);
-  for (const idx of sorted) {
-    if (idx < 0 || idx >= transcript.words.length) continue;
-    const clipId = ingest.wordToClipId.get(idx);
-    if (clipId === undefined) continue;
-    wordIndices.push(idx);
-    ops.push({
-      kind: "clip_delete",
-      clip_id: asId<"ClipId">(clipId) as ClipId,
-      ripple: false,
-    });
-  }
-  return { ops, wordIndices };
+  return buildWordIndexDeleteOpsShared(
+    { transcript, ingest, deleted: new Set() },
+    indices,
+  );
 }
 
 function suggestOutputPath(input: string): string {
@@ -198,13 +194,17 @@ function suggestOutputPath(input: string): string {
   return `${input.substring(0, dot)}.cut${input.substring(dot)}`;
 }
 
-export function TranscriptEditorPane({
-  project,
-  bootstrapMediaPath = null,
-  onBootstrapConsumed,
-  whisperModel,
-  onWhisperModelChange,
-}: Props) {
+export const TranscriptEditorPane = forwardRef<TranscriptHandle, Props>(function TranscriptEditorPane(
+  {
+    project,
+    bootstrapMediaPath = null,
+    onBootstrapConsumed,
+    whisperModel,
+    onWhisperModelChange,
+    siftPath = null,
+  },
+  ref,
+) {
   const [status, setStatus] = useState<Status>({ kind: "idle" });
   const [ingest, setIngest] = useState<IngestResult | null>(null);
   const [deleted, setDeleted] = useState<ReadonlySet<number>>(new Set());
@@ -234,6 +234,7 @@ export function TranscriptEditorPane({
   )
     ? status.transcript
     : null;
+
   const mediaPath = (
     status.kind === "transcribing"
     || status.kind === "ready"
@@ -242,6 +243,25 @@ export function TranscriptEditorPane({
   )
     ? status.mediaPath
     : null;
+
+  // Expose the transcript + ingest + deleted state to the chat planner
+  // via ref. The handle's getState() snapshots the current values
+  // each call so the planner always reads fresh data.
+  useImperativeHandle(
+    ref,
+    () => ({
+      hasTranscript(): boolean {
+        return transcript !== null && ingest !== null;
+      },
+      getState(): TranscriptState | null {
+        if (transcript === null || ingest === null) return null;
+        const state: TranscriptState = { transcript, ingest, deleted };
+        if (mediaPath !== null) state.sourcePath = mediaPath;
+        return state;
+      },
+    }),
+    [transcript, ingest, deleted, mediaPath],
+  );
 
   const keptWordCount = useMemo(() => {
     if (transcript === null) return 0;
@@ -359,20 +379,41 @@ export function TranscriptEditorPane({
         setSilenceStrip(null);
         setStatus({ kind: "transcribing", mediaPath: picked });
 
-        let transcriptResult: Transcript;
-        try {
-          transcriptResult = await getAIClient().transcribe(picked, "local", {
-            whisper_model: whisperModel,
-          });
-        } catch (e) {
-          const msg =
-            e instanceof AIServiceError
-              ? e.detail
-              : e instanceof Error
-                ? e.message
-                : String(e);
-          setStatus({ kind: "error", message: `Transcribe failed: ${msg}` });
-          return;
+        let transcriptResult: Transcript | null = null;
+        // Try the on-disk cache first — keyed by (path, whisper model,
+        // size, mtime). Avoids re-running Whisper on every app restart.
+        if (siftPath) {
+          try {
+            transcriptResult = await readCachedTranscript(
+              siftPath,
+              picked,
+              whisperModel,
+            );
+          } catch {
+            // Cache lookup failures are non-fatal; fall through to Whisper.
+            transcriptResult = null;
+          }
+        }
+        if (transcriptResult === null) {
+          try {
+            transcriptResult = await getAIClient().transcribe(picked, "local", {
+              whisper_model: whisperModel,
+            });
+          } catch (e) {
+            const msg =
+              e instanceof AIServiceError
+                ? e.detail
+                : e instanceof Error
+                  ? e.message
+                  : String(e);
+            setStatus({ kind: "error", message: `Transcribe failed: ${msg}` });
+            return;
+          }
+          // Persist for next time. Failure here is non-fatal.
+          if (siftPath) {
+            const tr: Transcript = transcriptResult;
+            void writeCachedTranscript(siftPath, picked, whisperModel, tr).catch(() => {});
+          }
         }
 
         setStatus({ kind: "ingesting", mediaPath: picked, transcript: transcriptResult });
@@ -419,7 +460,7 @@ export function TranscriptEditorPane({
         transcribeLockRef.current = false;
       }
     },
-    [project, whisperModel],
+    [project, whisperModel, siftPath],
   );
 
   useEffect(() => {
@@ -1263,7 +1304,7 @@ export function TranscriptEditorPane({
       ) : null}
     </div>
   );
-}
+});
 
 interface TranscriptBodyProps {
   status: Status;

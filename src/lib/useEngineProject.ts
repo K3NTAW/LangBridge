@@ -60,6 +60,15 @@ export interface UseEngineProject extends State {
   saveProject(): Promise<void>;
   saveProjectAs(): Promise<void>;
 
+  /**
+   * Folder-as-project helpers (Milestone A): same as `openProject` /
+   * `saveProject` but take an explicit path and skip the file dialog.
+   */
+  loadProjectFromPath(path: string): Promise<{ ok: true } | { ok: false; error: string }>;
+  saveProjectToPath(path: string): Promise<{ ok: true } | { ok: false; error: string }>;
+  /** New + save-to-path, atomically. Used to bootstrap a fresh `.sift/project.json`. */
+  newProjectAtPath(path: string): Promise<{ ok: true } | { ok: false; error: string }>;
+
   apply(op: Op): Promise<ApplyResult | null>;
   applyBatch(ops: Op[], options?: { group_undo?: boolean }): Promise<ApplyBatchOutcome>;
   clearHistory(): Promise<void>;
@@ -196,6 +205,70 @@ export function useEngineProject(): UseEngineProject {
     }
   }, [doSaveTo, saveProjectAs, state.path]);
 
+  // ── Folder-as-project paths ────────────────────────────────────────
+
+  const loadProjectFromPath = useCallback(
+    async (path: string): Promise<{ ok: true } | { ok: false; error: string }> => {
+      setState((s) => ({ ...s, busy: true, error: null }));
+      try {
+        await getEngineClient().load(path);
+        setState((s) => ({ ...s, path }));
+        await refreshHead();
+        return { ok: true };
+      } catch (e) {
+        const msg = (e as EngineError).message;
+        setError(msg);
+        return { ok: false, error: msg };
+      }
+    },
+    [setError, refreshHead],
+  );
+
+  const saveProjectToPath = useCallback(
+    async (path: string): Promise<{ ok: true } | { ok: false; error: string }> => {
+      try {
+        await getEngineClient().save(path);
+        setState((s) => ({ ...s, path }));
+        return { ok: true };
+      } catch (e) {
+        const msg = (e as EngineError).message;
+        // Don't surface auto-save failures as the global engine error —
+        // they're noisy and recoverable. Caller decides.
+        return { ok: false, error: msg };
+      }
+    },
+    [],
+  );
+
+  const newProjectAtPath = useCallback(
+    async (path: string): Promise<{ ok: true } | { ok: false; error: string }> => {
+      setState((s) => ({ ...s, busy: true, error: null }));
+      try {
+        const r = await getEngineClient().newProject();
+        await getEngineClient().save(path);
+        setState((s) => ({
+          ...s,
+          path,
+          head: {
+            project_id: r.project_id,
+            head: null,
+            n_ops: 0,
+            can_undo: false,
+            can_redo: false,
+          },
+          busy: false,
+          error: null,
+        }));
+        return { ok: true };
+      } catch (e) {
+        const msg = (e as EngineError).message;
+        setError(msg);
+        return { ok: false, error: msg };
+      }
+    },
+    [setError],
+  );
+
   const apply = useCallback(
     async (op: Op): Promise<ApplyResult | null> => {
       setState((s) => ({ ...s, busy: true, error: null }));
@@ -304,6 +377,9 @@ export function useEngineProject(): UseEngineProject {
     openProject,
     saveProject,
     saveProjectAs,
+    loadProjectFromPath,
+    saveProjectToPath,
+    newProjectAtPath,
     apply,
     applyBatch,
     clearHistory,

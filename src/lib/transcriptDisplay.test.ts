@@ -22,12 +22,21 @@ describe("formatParenTimestamp", () => {
 });
 
 describe("whisperChipLabel", () => {
-  it("trims ends and collapses internal whitespace", () => {
-    expect(whisperChipLabel("  hello\tworld  ")).toBe("hello world");
+  // U+00A0 (non-breaking space) prefix — preserved by CSS whitespace
+  // collapsing so adjacent inline word buttons render with visible gaps.
+  const NBSP = " ";
+
+  it("trims ends, collapses internal whitespace, prefixes NBSP", () => {
+    expect(whisperChipLabel("  hello\tworld  ")).toBe(`${NBSP}hello world`);
   });
 
-  it("strips Whisper-style leading boundary spaces used between DTW tokens", () => {
-    expect(whisperChipLabel(" what's")).toBe("what's");
+  it("normalises Whisper-style leading boundary spaces to a single NBSP", () => {
+    expect(whisperChipLabel(" what's")).toBe(`${NBSP}what's`);
+  });
+
+  it("returns empty string unchanged (no spurious NBSP for blank tokens)", () => {
+    expect(whisperChipLabel("")).toBe("");
+    expect(whisperChipLabel("   ")).toBe("");
   });
 });
 

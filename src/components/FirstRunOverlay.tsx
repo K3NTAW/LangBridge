@@ -1,70 +1,80 @@
-import { Sparkles, X } from "lucide-react";
-
-import { modKeySymbol } from "../lib/modKey";
-import { Kbd } from "./ui/Kbd";
+/**
+ * First-run welcome overlay — design system v0.1.
+ *
+ * Centered modal with the copper hero mark, the three pillars from the
+ * pivot plan, and two CTAs.
+ */
+import { Film, Folder, Sparkles } from "lucide-react";
 
 interface Props {
   onDismiss: () => void;
 }
 
-/**
- * First-run checklist — Phase 1 “magic moment” orientation.
- */
 export function FirstRunOverlay({ onDismiss }: Props) {
-  const mod = modKeySymbol();
   return (
     <div
-      className="fixed inset-0 z-[90] flex items-center justify-center bg-black/75 p-6 backdrop-blur-sm"
+      className="scrim"
       role="dialog"
       aria-modal
-      aria-labelledby="cut-onboarding-title"
+      aria-labelledby="sift-welcome-title"
     >
-      <div className="relative max-w-lg rounded-xl border border-violet-900/40 bg-zinc-950 px-6 py-6 shadow-2xl">
-        <button
-          type="button"
-          onClick={onDismiss}
-          className="absolute right-3 top-3 rounded-md border border-zinc-800 p-1.5 text-zinc-500 hover:bg-zinc-900 hover:text-zinc-200"
-          aria-label="Close welcome"
-        >
-          <X className="h-4 w-4" strokeWidth={2} />
-        </button>
-        <div className="mb-4 flex items-center gap-2 text-violet-300">
-          <Sparkles className="h-5 w-5" strokeWidth={2} />
-          <h2 id="cut-onboarding-title" className="text-lg font-semibold text-zinc-100">
-            Welcome to Sift
-          </h2>
+      <div className="modal welcome">
+        <div className="welcome-body">
+          <div className="hero-mark" aria-hidden />
+          <h1 id="sift-welcome-title">Welcome to Sift</h1>
+          <p className="lead">
+            Open a folder of footage. Tell Sift what you want. Watch the cut, approve or
+            undo, export.
+          </p>
+          <ul>
+            <li>
+              <span className="pillar-icon">
+                <Folder size={12} strokeWidth={2.25} />
+              </span>
+              <div>
+                <div className="pillar-title">Local-first.</div>
+                <div className="pillar-sub">
+                  Footage never leaves your machine. Chat is opt-in per project.
+                </div>
+              </div>
+            </li>
+            <li>
+              <span className="pillar-icon">
+                <Sparkles size={12} strokeWidth={2.25} />
+              </span>
+              <div>
+                <div className="pillar-title">Conversational, not one-shot.</div>
+                <div className="pillar-sub">
+                  Iterate with the assistant. Approve or undo each proposal.
+                </div>
+              </div>
+            </li>
+            <li>
+              <span className="pillar-icon">
+                <Film size={12} strokeWidth={2.25} />
+              </span>
+              <div>
+                <div className="pillar-title">Built for long-form.</div>
+                <div className="pillar-sub">
+                  Podcasts, interviews, lectures — 30 minutes to 3 hours.
+                </div>
+              </div>
+            </li>
+          </ul>
+          <div style={{ display: "flex", gap: 8 }}>
+            <button type="button" className="btn is-primary" onClick={onDismiss}>
+              Get started
+            </button>
+            <button
+              type="button"
+              className="btn is-tertiary"
+              onClick={onDismiss}
+              title="Coming soon"
+            >
+              Open recent
+            </button>
+          </div>
         </div>
-        <ol className="list-decimal space-y-3 pl-5 text-sm leading-relaxed text-zinc-300">
-          <li>
-            Pick a <strong className="font-medium text-zinc-200">Whisper model</strong> in Transcript — tiny/base for a
-            quick try; larger for cleaner captions.
-          </li>
-          <li>
-            Use <strong className="font-medium text-zinc-200">Timeline → Media</strong> to import, then{" "}
-            <strong className="font-medium text-zinc-200">Transcribe…</strong>, or open a video directly in Transcript.
-          </li>
-          <li>
-            Click words to remove them; <strong className="font-medium text-zinc-200">Export</strong> writes H.264 via
-            sift-ai. Optional <strong className="font-medium text-zinc-200">Captions</strong> (.srt / .vtt) stays synced
-            to the cut.
-          </li>
-          <li>
-            <strong className="font-medium text-zinc-200">Strip silence</strong> removes words that sit mostly in
-            FFmpeg-detected dead air (see Transcript → Analyze & dead-air strip).
-          </li>
-          <li>
-            Press <Kbd>{mod}</Kbd>
-            <Kbd>K</Kbd> for the AI palette (plan stream). Hybrid sends planning to the stub cloud path while Whisper
-            stays local.
-          </li>
-        </ol>
-        <button
-          type="button"
-          onClick={onDismiss}
-          className="mt-6 w-full rounded-lg bg-violet-600 py-2.5 text-sm font-medium text-white hover:bg-violet-500"
-        >
-          Get started
-        </button>
       </div>
     </div>
   );

@@ -1,4 +1,4 @@
-//! CUT Tauri host library.
+//! Sift Tauri host library.
 //!
 //! Runs the Tauri runtime, owns the main window, spawns the
 //! `sift-engine-host` subprocess at boot, and exposes Tauri commands
@@ -10,6 +10,7 @@
 
 mod engine;
 mod preview;
+mod preview_render;
 
 use tauri::Manager;
 use tokio::sync::Mutex;
@@ -70,6 +71,7 @@ pub fn run() {
             engine::engine_load,
             preview::preview_frame_png,
             preview::preview_probe,
+            preview_render::preview_render_flatten,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

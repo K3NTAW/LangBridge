@@ -1,12 +1,82 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
-  "description": "Default capabilities for the main window: dialogs, fs (scoped), os info.",
+  "description": "Default capabilities for the main window.",
   "windows": ["main"],
   "permissions": [
     "core:default",
     "dialog:default",
     "fs:default",
-    "os:default"
+    "os:default",
+    {
+      "identifier": "fs:allow-read-dir",
+      "allow": [
+        { "path": "**" },
+        { "path": "**/.sift" },
+        { "path": "**/.sift/**" }
+      ]
+    },
+    {
+      "identifier": "fs:allow-read-file",
+      "allow": [
+        { "path": "**" },
+        { "path": "**/.sift/**" }
+      ]
+    },
+    {
+      "identifier": "fs:allow-read-text-file",
+      "allow": [
+        { "path": "**" },
+        { "path": "**/.sift/**" }
+      ]
+    },
+    {
+      "identifier": "fs:allow-write-file",
+      "allow": [
+        { "path": "**" },
+        { "path": "**/.sift" },
+        { "path": "**/.sift/**" }
+      ]
+    },
+    {
+      "identifier": "fs:allow-write-text-file",
+      "allow": [
+        { "path": "**" },
+        { "path": "**/.sift" },
+        { "path": "**/.sift/**" }
+      ]
+    },
+    {
+      "identifier": "fs:allow-mkdir",
+      "allow": [
+        { "path": "**" },
+        { "path": "**/.sift" },
+        { "path": "**/.sift/**" }
+      ]
+    },
+    {
+      "identifier": "fs:allow-exists",
+      "allow": [
+        { "path": "**" },
+        { "path": "**/.sift" },
+        { "path": "**/.sift/**" }
+      ]
+    },
+    {
+      "identifier": "fs:allow-stat",
+      "allow": [
+        { "path": "**" },
+        { "path": "**/.sift" },
+        { "path": "**/.sift/**" }
+      ]
+    },
+    {
+      "identifier": "fs:scope",
+      "allow": [
+        { "path": "**" },
+        { "path": "**/.sift" },
+        { "path": "**/.sift/**" }
+      ]
+    }
   ]
 }
